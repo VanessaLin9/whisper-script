@@ -10,15 +10,22 @@ set -euo pipefail
 # - Copies transcript to clipboard and opens folder
 # =======================
 
+# ---- Load environment variables from .env file ----
+if [ -f ".env" ]; then
+  set -a  # automatically export all variables
+  source .env
+  set +a  # turn off automatic export
+fi
+
 # ---- Configure your Whisper.cpp absolute path ----
-WHISPER_ROOT="/Users/samuelwong/whisper.cpp"
+WHISPER_ROOT="${WHISPER_ROOT:-/Users/samuelwong/whisper.cpp}"
 BIN="$WHISPER_ROOT/build/bin"
 MODELS_DIR="$WHISPER_ROOT/models"
 MODEL_SMALL="$MODELS_DIR/ggml-small.en.bin"
 MODEL_BASE="$MODELS_DIR/ggml-base.en.bin"
 
 # ---- Output directory (change if you want) ----
-OUTDIR="$HOME/MeetingRecords/Transcripts"
+OUTDIR="${TRANSCRIPTS_DIR:-$HOME/MeetingRecords/Transcripts}"
 mkdir -p "$OUTDIR"
 
 # ---- Threads ----

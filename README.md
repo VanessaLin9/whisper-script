@@ -81,25 +81,35 @@ bash ./models/download-ggml-model.sh base.en
 
 ## Configuration
 
-### Setting Whisper.cpp Path
+### Environment Variables Setup
 
-Edit the `WHISPER_ROOT` variable in both scripts to match your installation:
+1. **Copy the example environment file:**
+   ```bash
+   cp .env.example .env
+   ```
 
-```bash
-# In meeting-assist-chunked.sh (line 22)
-WHISPER_ROOT="${WHISPER_ROOT:-/Users/yourusername/whisper.cpp}"
+2. **Edit the `.env` file** with your specific paths:
+   ```bash
+   # Whisper.cpp Configuration
+   WHISPER_ROOT=/Users/yourusername/whisper.cpp
+   
+   # Output directories
+   MEETING_RECORDS_DIR=$HOME/MeetingRecords
+   TRANSCRIPTS_DIR=$HOME/MeetingRecords/Transcripts
+   
+   # Audio device (macOS AVFoundation format)
+   MIC_DEVICE=:0
+   ```
 
-# In transcribe-meeting.sh (line 14)
-WHISPER_ROOT="/Users/yourusername/whisper.cpp"
-```
+The scripts will automatically load these environment variables if a `.env` file exists. If no `.env` file is found, the scripts will use default values.
 
 ### Audio Device Configuration
 
-For recording scripts, you can modify the microphone device:
+You can configure the microphone device in your `.env` file:
 
 ```bash
-# In meeting-assist-chunked.sh (line 33)
-MIC=":0"  # :0 is built-in Mac microphone
+# In .env file
+MIC_DEVICE=:0  # :0 is built-in Mac microphone
 ```
 
 To see available devices:

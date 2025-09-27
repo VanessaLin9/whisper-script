@@ -16,6 +16,14 @@ set -euo pipefail
 #   ~/MeetingRecords
 ###############################################################################
 
+# ====== 環境變數載入區塊 ======
+# 載入 .env 檔案（如果存在）
+if [ -f ".env" ]; then
+  set -a  # 自動匯出所有變數
+  source .env
+  set +a  # 關閉自動匯出
+fi
+
 # ====== 路徑設定區塊 ======
 
 # 環境變數設定：如果 WHISPER_ROOT 沒有設定，則使用預設值
@@ -30,10 +38,10 @@ FALLBACK_MODEL="$MODELS_DIR/ggml-base.en.bin" # backup model
 
 # ====== setting section ======
 # 音訊輸入設備（macOS 的 AVFoundation 格式）
-MIC=":0"                       # :0 為 Mac 內建麥克風
+MIC="${MIC_DEVICE:-:0}"                      # 從 .env 載入或使用預設值 :0
 
-# 使用 $HOME 變數來指定用戶家目錄下的輸出資料夾
-OUTDIR="$HOME/MeetingRecords"
+# 使用環境變數來指定輸出資料夾
+OUTDIR="${MEETING_RECORDS_DIR:-$HOME/MeetingRecords}"
 
 # 動態取得 CPU 核心數，用於多執行緒處理
 # $(...) 是命令替換：執行括號內的命令並將輸出作為變數值
