@@ -1,232 +1,175 @@
-# Whisper Script Collection
+# Whisper Script Collection | Whisper 腳本集合
 
-A collection of bash scripts for meeting transcription using [Whisper.cpp](https://github.com/ggerganov/whisper.cpp). These scripts provide easy-to-use tools for recording meetings and transcribing audio files with high accuracy.
+Bash scripts for meeting transcription using [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) with environment-based configuration.  
+使用 [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) 進行會議轉錄的 Bash 腳本，支援環境變數配置。
 
-## Features
+## Features | 功能特色
 
-- **Real-time meeting recording** with automatic transcription
-- **Batch audio transcription** for existing audio files
-- **Multiple output formats**: TXT, SRT, VTT, JSON
-- **Automatic audio normalization** for optimal transcription quality
-- **Smart model selection** with fallback options
-- **macOS optimized** with AVFoundation integration
+- **Live meeting recording** with automatic transcription  
+  **即時會議錄音** 自動轉錄功能
+- **Batch audio transcription** for existing files  
+  **批次音訊轉錄** 處理現有檔案
+- **Multiple formats**: TXT, SRT, VTT, JSON  
+  **多種格式**：TXT, SRT, VTT, JSON
+- **Environment-based configuration** via `.env` files  
+  **環境變數配置** 透過 `.env` 檔案
+- **Smart model selection** with fallback  
+  **智慧模型選擇** 支援備用方案
+- **macOS optimized** with AVFoundation  
+  **macOS 優化** 使用 AVFoundation
 
-## Scripts Overview
+## Scripts | 腳本說明
 
-### 1. `meeting-assist-chunked.sh` - Live Meeting Recording & Transcription
+### 1. `meeting-assist-chunked.sh` - Live Recording & Transcription | 即時錄音轉錄
+Records meetings in real-time and transcribes when stopped (Ctrl+C).  
+即時錄製會議並在停止時自動轉錄（Ctrl+C）。
 
-Records a meeting in real-time and automatically transcribes it when recording stops.
+**Features | 功能：**
+- Continuous recording with automatic transcription  
+  持續錄音並自動轉錄
+- Smart model selection (prefers `small.en`, fallback to `base.en`)  
+  智慧模型選擇（偏好 `small.en`，備用 `base.en`）
+- Outputs: audio, TXT, SRT files  
+  輸出：音訊、TXT、SRT 檔案
+- Environment-based configuration  
+  基於環境變數的配置
 
-**Features:**
-- Continuous recording until manually stopped (Ctrl+C)
-- Automatic transcription after recording ends
-- Uses `small.en` model (falls back to `base.en` if needed)
-- Outputs: audio file, TXT transcript, SRT subtitles
-- Comprehensive logging and error handling
+### 2. `transcribe-meeting.sh` - Batch Transcription | 批次轉錄
+Transcribes existing audio files with preprocessing.  
+對現有音訊檔案進行預處理後轉錄。
 
-**Usage:**
-```bash
-./meeting-assist-chunked.sh
-```
+**Features | 功能：**
+- Audio normalization to 16kHz mono WAV  
+  音訊正規化為 16kHz 單聲道 WAV
+- Multiple output formats (TXT, SRT, VTT, JSON)  
+  多種輸出格式（TXT, SRT, VTT, JSON）
+- Clipboard integration (macOS)  
+  剪貼簿整合（macOS）
+- Drag & drop file support  
+  拖放檔案支援
 
-**Output Location:** `~/MeetingRecords/`
+## Setup | 安裝設定
 
-### 2. `transcribe-meeting.sh` - Batch Audio Transcription
-
-Transcribes existing audio files with advanced preprocessing and multiple output formats.
-
-**Features:**
-- Interactive file path input
-- Audio normalization to 16kHz mono WAV
-- Multiple output formats (TXT, SRT, VTT, JSON)
-- Automatic clipboard copying (macOS)
-- Opens output folder when complete
-- Duration estimation with ffprobe
-
-**Usage:**
-```bash
-./transcribe-meeting.sh
-```
-
-**Output Location:** `~/MeetingRecords/Transcripts/`
-
-## Prerequisites
-
-### 1. Whisper.cpp Installation
-
-First, install and build Whisper.cpp:
+### 1. Install Dependencies | 安裝依賴套件
 
 ```bash
-# Clone the repository
+# Install Whisper.cpp | 安裝 Whisper.cpp
 git clone https://github.com/ggerganov/whisper.cpp.git
 cd whisper.cpp
-
-# Build (macOS)
 cmake -B build -DWHISPER_PORTAUDIO=OFF
 cmake --build build -j
 
-# Download models
+# Download models | 下載模型
 bash ./models/download-ggml-model.sh small.en
 bash ./models/download-ggml-model.sh base.en
+
+# Install FFmpeg (macOS) | 安裝 FFmpeg (macOS)
+brew install ffmpeg
 ```
 
-### 2. Required Tools
-
-- **FFmpeg**: For audio recording and processing
-  ```bash
-  brew install ffmpeg
-  ```
-
-- **System Requirements**: macOS (for AVFoundation support)
-
-## Configuration
-
-### Environment Variables Setup
-
-1. **Copy the example environment file:**
-   ```bash
-   cp .env.example .env
-   ```
-
-2. **Edit the `.env` file** with your specific paths:
-   ```bash
-   # Whisper.cpp Configuration
-   WHISPER_ROOT=/Users/yourusername/whisper.cpp
-   
-   # Output directories
-   MEETING_RECORDS_DIR=$HOME/MeetingRecords
-   TRANSCRIPTS_DIR=$HOME/MeetingRecords/Transcripts
-   
-   # Audio device (macOS AVFoundation format)
-   MIC_DEVICE=:0
-   ```
-
-The scripts will automatically load these environment variables if a `.env` file exists. If no `.env` file is found, the scripts will use default values.
-
-### Audio Device Configuration
-
-You can configure the microphone device in your `.env` file:
+### 2. Configure Environment | 配置環境變數
 
 ```bash
-# In .env file
-MIC_DEVICE=:0  # :0 is built-in Mac microphone
+# Copy and edit configuration | 複製並編輯配置
+cp .env.example .env
+nano .env  # Edit paths to match your setup | 編輯路徑以符合您的設定
 ```
 
-To see available devices:
+## Configuration | 配置說明
+
+Edit `.env` file with your paths | 編輯 `.env` 檔案設定您的路徑：
+
 ```bash
-ffmpeg -f avfoundation -list_devices true -i ""
+# Required | 必需設定
+WHISPER_ROOT=/Users/yourusername/whisper.cpp
+
+# Optional (with defaults) | 可選（有預設值）
+MEETING_RECORDS_DIR=$HOME/MeetingRecords
+TRANSCRIPTS_DIR=$HOME/MeetingRecords/Transcripts
+MIC_DEVICE=:0                    # :0 = built-in Mac microphone | :0 = Mac 內建麥克風
+DEFAULT_LANGUAGE=en
+PREFERRED_MODEL=small            # small, base, tiny, etc. | small, base, tiny 等
+THREADS=8                        # Auto-detected if not set | 未設定時自動偵測
 ```
 
-## Usage Examples
+**Audio devices | 音訊設備：** Run `ffmpeg -f avfoundation -list_devices true -i ""` to see available devices.  
+執行 `ffmpeg -f avfoundation -list_devices true -i ""` 查看可用設備。
 
-### Recording a Live Meeting
+## Usage | 使用方法
 
-1. Start recording:
-   ```bash
-   ./meeting-assist-chunked.sh
-   ```
+### Live Recording | 即時錄音
+```bash
+./meeting-assist-chunked.sh
+# Press Ctrl+C to stop and transcribe | 按 Ctrl+C 停止並轉錄
+```
 
-2. The script will:
-   - List available audio devices
-   - Start recording from your microphone
-   - Display recording status
+### Batch Transcription | 批次轉錄
+```bash
+./transcribe-meeting.sh
+# Drag & drop audio file or type path | 拖放音訊檔案或輸入路徑
+```
 
-3. Stop recording:
-   - Press `Ctrl+C` to stop recording
-   - Transcription will begin automatically
+**Output files | 輸出檔案：**
+- Audio | 音訊: `meeting_YYYYMMDD_HHMMSS.wav`
+- Transcript | 轉錄文字: `meeting_YYYYMMDD_HHMMSS.txt`
+- Subtitles | 字幕: `meeting_YYYYMMDD_HHMMSS.srt`
+- WebVTT: `meeting_YYYYMMDD_HHMMSS.vtt` (batch only | 僅批次轉錄)
+- JSON: `meeting_YYYYMMDD_HHMMSS.json` (batch only | 僅批次轉錄)
 
-4. Output files:
-   - `meeting_YYYYMMDD_HHMMSS.wav` - Original audio
-   - `meeting_YYYYMMDD_HHMMSS.txt` - Text transcript
-   - `meeting_YYYYMMDD_HHMMSS.srt` - Subtitle file
+## Models | 模型說明
 
-### Transcribing Existing Audio
+**Preference order | 優先順序：**
+1. `small.en` - Best speed/accuracy balance | 最佳速度/準確度平衡
+2. `base.en` - Faster fallback | 更快的備用方案
 
-1. Run the transcription script:
-   ```bash
-   ./transcribe-meeting.sh
-   ```
+Models auto-download to `models/` directory.  
+模型會自動下載到 `models/` 目錄。
 
-2. Enter the path to your audio file when prompted
+## Troubleshooting | 故障排除
 
-3. The script will:
-   - Normalize the audio to optimal format
-   - Transcribe using the best available model
-   - Generate multiple output formats
-   - Copy transcript to clipboard (macOS)
-   - Open the output folder
+**"whisper-cli not found" | "找不到 whisper-cli"**
+```bash
+cd $WHISPER_ROOT && cmake --build build -j
+```
 
-## Output Formats
+**"No model found" | "找不到模型"**
+```bash
+bash ./models/download-ggml-model.sh small.en
+```
 
-| Format | Description | Use Case |
-|--------|-------------|----------|
-| `.txt` | Plain text transcript | Reading, editing, sharing |
-| `.srt` | SubRip subtitle format | Video editing, streaming |
-| `.vtt` | WebVTT subtitle format | Web players, HTML5 video |
-| `.json` | Rich JSON with timestamps | Advanced processing, analysis |
+**"Recording file missing/empty" | "錄音檔案遺失/空白"**
+- Check mic permissions in System Preferences | 檢查系統偏好設定中的麥克風權限
+- Verify device ID: `ffmpeg -f avfoundation -list_devices true -i ""` | 驗證設備 ID
 
-## Model Information
+**".env file not found" | "找不到 .env 檔案"**
+```bash
+cp .env.example .env && nano .env
+```
 
-The scripts use these Whisper models in order of preference:
-
-1. **small.en** - Best balance of speed and accuracy for English
-2. **base.en** - Faster but less accurate fallback
-
-Models are automatically downloaded and cached in the `models/` directory.
-
-## Troubleshooting
-
-### Common Issues
-
-**"whisper-cli not found"**
-- Ensure Whisper.cpp is built: `cmake --build build -j`
-- Check the `WHISPER_ROOT` path in scripts
-
-**"No model found"**
-- Download models: `bash ./models/download-ggml-model.sh small.en`
-- Or: `bash ./models/download-ggml-model.sh base.en`
-
-**"Recording file is missing or empty"**
-- Check microphone permissions in System Preferences
-- Verify the audio device ID with `ffmpeg -f avfoundation -list_devices true -i ""`
-
-**Audio quality issues**
-- Ensure good microphone positioning
-- Check for background noise
-- Use headphones to prevent feedback
-
-### Performance Tips
-
-- **CPU Usage**: The scripts automatically detect CPU cores for optimal threading
-- **Long Meetings**: For meetings >30 minutes, consider using `small.en` for better accuracy
-- **Storage**: Audio files can be large; ensure sufficient disk space
-
-## File Structure
+## Files | 檔案結構
 
 ```
 whisper-script/
-├── README.md
-├── meeting-assist-chunked.sh    # Live recording + transcription
-└── transcribe-meeting.sh        # Batch transcription
+├── .env.example                 # Configuration template | 配置範本
+├── .env                         # Your configuration (ignored by git) | 您的配置（git 忽略）
+├── meeting-assist-chunked.sh    # Live recording + transcription | 即時錄音 + 轉錄
+├── transcribe-meeting.sh        # Batch transcription | 批次轉錄
+└── README.md
 
-~/MeetingRecords/                # Output directory
-├── meeting_YYYYMMDD_HHMMSS.wav  # Recorded audio
-├── meeting_YYYYMMDD_HHMMSS.txt  # Text transcript
-├── meeting_YYYYMMDD_HHMMSS.srt  # Subtitle file
-└── ffmpeg_YYYYMMDD_HHMMSS.log   # Recording log
+~/MeetingRecords/                # Live recording output | 即時錄音輸出
+├── meeting_YYYYMMDD_HHMMSS.wav  # Audio | 音訊
+├── meeting_YYYYMMDD_HHMMSS.txt  # Transcript | 轉錄文字
+└── meeting_YYYYMMDD_HHMMSS.srt  # Subtitles | 字幕
 
-~/MeetingRecords/Transcripts/    # Batch transcription output
-├── filename_norm16k.wav         # Normalized audio
-├── filename_final.txt           # Text transcript
-├── filename_final.srt           # Subtitle file
-├── filename_final.vtt           # WebVTT subtitle
-└── filename_final.json          # Rich JSON data
+~/MeetingRecords/Transcripts/    # Batch transcription output | 批次轉錄輸出
+├── filename_norm16k.wav         # Normalized audio | 正規化音訊
+├── filename_transcription.txt   # Transcript | 轉錄文字
+├── filename_transcription.srt   # Subtitles | 字幕
+├── filename_transcription.vtt   # WebVTT
+└── filename_transcription.json  # JSON data | JSON 資料
 ```
 
-## Contributing
+## License | 授權
 
-Feel free to submit issues and enhancement requests! This project is designed to be simple and reliable for meeting transcription workflows.
-
-## License
-
-This project is open source. The scripts are provided as-is for personal and professional use.
+Open source - use freely for personal and professional transcription workflows.  
+開源專案 - 可自由用於個人和專業轉錄工作流程。
