@@ -46,6 +46,18 @@ ffmpeg_*.log
 .VolumeIcon.icns
 .com.apple.timemachine.donotpresent
 
+# Python
+.venv/
+__pycache__/
+*.pyc
+python_pipeline/.cache/
+models/
+recordings/
+outputs/
+logs/
+tmp/
+
+
 # Directories potentially created on remote AFP share
 .AppleDB
 .AppleDesktop
