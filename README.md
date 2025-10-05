@@ -50,21 +50,19 @@ Transcribes existing audio files with preprocessing.
 
 ## Setup | 安裝設定
 
-### 1. Install Dependencies | 安裝依賴套件
+### 1. Manual Prerequisites | 手動安裝前置需求
+
+**You need to install these manually first | 請先手動安裝以下項目：**
 
 ```bash
-# Install Whisper.cpp | 安裝 Whisper.cpp
-git clone https://github.com/ggerganov/whisper.cpp.git
-cd whisper.cpp
-cmake -B build -DWHISPER_PORTAUDIO=OFF
-cmake --build build -j
+# Install Homebrew (if not already installed) | 安裝 Homebrew（如果尚未安裝）
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
 
-# Download models | 下載模型
-bash ./models/download-ggml-model.sh small.en
-bash ./models/download-ggml-model.sh base.en
+# Install basic tools | 安裝基本工具
+brew install git cmake
 
-# Install FFmpeg (macOS) | 安裝 FFmpeg (macOS)
-brew install ffmpeg
+# Clone Whisper.cpp | 克隆 Whisper.cpp
+git clone https://github.com/ggerganov/whisper.cpp.git ~/whisper.cpp
 ```
 
 ### 2. Configure Environment | 配置環境變數
@@ -73,6 +71,64 @@ brew install ffmpeg
 # Copy and edit configuration | 複製並編輯設定檔
 cp .env.example .env
 nano .env  # Edit paths to match your setup | 編輯路徑以符合實際環境
+```
+
+**Required setting in `.env` | `.env` 中必須設定：**
+```bash
+WHISPER_ROOT=/Users/yourusername/whisper.cpp  # Path to your whisper.cpp clone | 您的 whisper.cpp 路徑
+```
+
+### 3. Automated Setup | 自動化設定
+
+```bash
+# Run the automated setup script | 執行自動化設定腳本
+python3 python_pipeline/init_env.py
+```
+
+**What the script does automatically | 腳本會自動處理：**
+- ✅ Compiles Whisper.cpp | 編譯 Whisper.cpp
+- ✅ Downloads required models | 下載所需模型
+- ✅ Installs FFmpeg (macOS) | 安裝 FFmpeg (macOS)
+- ✅ Creates output directories | 建立輸出目錄
+- ✅ Validates environment | 驗證環境設定
+
+### 4. Python Pipeline | Python 管道
+
+The project includes a Python setup pipeline for automated environment initialization | 專案包含 Python 設定管道，用於自動化環境初始化：
+
+```bash
+# Run setup (one-time) | 執行設定（一次性）
+python3 python_pipeline/init_env.py
+
+# Main pipeline entry point | 主要管道入口點
+python3 python_pipeline/main_pipeline.py
+```
+
+**Pipeline features | 管道功能：**
+- 🔧 **Environment validation** | 環境驗證
+- 📦 **Dependency management** | 依賴管理
+- 🏗️ **Automated building** | 自動化建置
+- 📁 **Directory structure** | 目錄結構管理
+- ✅ **Health checks** | 健康檢查
+
+### Quick Setup Summary | 快速設定摘要
+
+**Step 1-2: Manual (one-time) | 步驟 1-2：手動（一次性）**
+```bash
+brew install git cmake
+git clone https://github.com/ggerganov/whisper.cpp.git ~/whisper.cpp
+cp .env.example .env && nano .env  # Set WHISPER_ROOT
+```
+
+**Step 3: Automated | 步驟 3：自動化**
+```bash
+python3 python_pipeline/init_env.py  # Does everything else!
+```
+
+**Step 4: Ready to use! | 步驟 4：準備使用！**
+```bash
+./meeting-assist-chunked.sh    # Live recording
+./transcribe-meeting.sh        # Batch transcription
 ```
 
 ## Configuration | 配置說明
@@ -127,14 +183,28 @@ Models auto-download to `models/` directory.
 
 ## Troubleshooting | 故障排除
 
+**"Python script fails" | "Python 腳本失敗"**
+```bash
+# Re-run the automated setup | 重新執行自動化設定
+python3 python_pipeline/init_env.py
+```
+
 **"whisper-cli not found" | "找不到 whisper-cli"**
 ```bash
+# Manual compilation if needed | 如需要可手動編譯
 cd $WHISPER_ROOT && cmake --build build -j
 ```
 
 **"No model found" | "找不到模型"**
 ```bash
+# Manual model download | 手動下載模型
 bash ./models/download-ggml-model.sh small.en
+```
+
+**"Missing dependencies" | "缺少依賴套件"**
+```bash
+# Install missing tools | 安裝缺少的工具
+brew install git cmake ffmpeg
 ```
 
 **"Recording file missing/empty" | "錄音檔案遺失或空白"**
@@ -154,6 +224,10 @@ whisper-script/
 ├── .env                         # Your configuration (ignored by git) | 使用者配置（git 忽略）
 ├── meeting-assist-chunked.sh    # Live recording + transcription | 即時錄音 + 轉錄
 ├── transcribe-meeting.sh        # Batch transcription | 批次轉錄
+├── python_pipeline/             # Python automation pipeline | Python 自動化管道
+│   ├── init_env.py              # Environment setup script | 環境設定腳本
+│   ├── main_pipeline.py         # Main pipeline entry | 主要管道入口
+│   └─── config.yaml              # Pipeline configuration | 管道配置
 └── README.md
 
 ~/MeetingRecords/                # Live recording output | 即時錄音輸出
