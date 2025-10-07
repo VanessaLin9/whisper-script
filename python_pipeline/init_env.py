@@ -2,7 +2,7 @@ import os, re, shutil, subprocess, sys
 from subprocess import CalledProcessError
 from pathlib import Path
 
-# -------- util: 讀取 .env（僅 key=value，忽略註解/空行） --------
+# -------- util: Load .env (key=value only, ignore comments/empty lines) --------
 def load_env(env_path: Path) -> dict:
     env = {}
     if not env_path.exists():
@@ -20,7 +20,7 @@ def ensure_dir(p: Path):
     return p
 
 def run_cmd(cmd, cwd=None, check=True):
-    """小幫手：在終端執行指令並印出。"""
+    """Helper: Execute command in terminal and print."""
     print("$", " ".join(cmd))
     return subprocess.run(cmd, cwd=cwd, check=check)
 
@@ -31,15 +31,15 @@ def on_macos():
     return sys.platform == "darwin"
 
 def check_git():
-    """檢查 git 是否安裝"""
+    """Check if git is installed"""
     if not shutil.which("git"):
-        raise RuntimeError("❌ 找不到 git，請先安裝 git")
+        raise RuntimeError("❌ git not found, please install git first")
     print("✅ git found")
 
 def check_cmake():
-    """檢查 cmake 是否安裝"""
+    """Check if cmake is installed"""
     if not shutil.which("cmake"):
-        raise RuntimeError("❌ 找不到 cmake，請先安裝 cmake (brew install cmake)")
+        raise RuntimeError("❌ cmake not found, please install cmake (brew install cmake)")
     print("✅ cmake found")
 
 # -------- ffmpeg --------
@@ -60,34 +60,34 @@ def ensure_ffmpeg():
 # -------- whisper.cpp --------
 def ensure_whisper_cpp(whisper_root: Path) -> Path:
     """
-    確保 whisper.cpp 已編譯
-    假設 whisper.cpp 已手動下載到 whisper_root
+    Ensure whisper.cpp is compiled
+    Assumes whisper.cpp is manually downloaded to whisper_root
     """
-    print(f"\n🔍 檢查 whisper.cpp: {whisper_root}")
+    print(f"\n🔍 Checking whisper.cpp: {whisper_root}")
     
-    # 1. 檢查目錄是否存在
+    # 1. Check if directory exists
     if not whisper_root.exists():
         raise FileNotFoundError(
-            f"❌ whisper.cpp 目錄不存在: {whisper_root}\n"
-            f"請手動 clone:\n"
+            f"❌ whisper.cpp directory not found: {whisper_root}\n"
+            f"Please manually clone:\n"
             f"  git clone https://github.com/ggml-org/whisper.cpp.git {whisper_root}"
         )
     
-    # 2. 檢查關鍵檔案
+    # 2. Check key files
     cmake_file = whisper_root / "CMakeLists.txt"
     if not cmake_file.exists():
         raise FileNotFoundError(
-            f"❌ whisper.cpp 目錄不完整（找不到 CMakeLists.txt）\n"
-            f"請確認 {whisper_root} 是完整的 whisper.cpp repo"
+            f"❌ whisper.cpp directory incomplete (CMakeLists.txt not found)\n"
+            f"Please ensure {whisper_root} is a complete whisper.cpp repo"
         )
     
-    print(f"✅ whisper.cpp 目錄完整")
+    print(f"✅ whisper.cpp directory complete")
     
-    # 3. 檢查是否已編譯
+    # 3. Check if already compiled
     whisper_cli = whisper_root / "build" / "bin" / "whisper-cli"
     
     if not whisper_cli.exists():
-        print(f"🔨 開始編譯 whisper.cpp...")
+        print(f"🔨 Starting whisper.cpp compilation...")
         
         try:
             # cmake -B build
@@ -110,38 +110,38 @@ def ensure_whisper_cpp(whisper_root: Path) -> Path:
                 text=True
             )
             
-            print(f"✅ whisper.cpp 編譯完成")
+            print(f"✅ whisper.cpp compilation complete")
         except CalledProcessError as e:
-            print(f"❌ 編譯失敗: {e.stderr}")
+            print(f"❌ Compilation failed: {e.stderr}")
             raise
     else:
-        print(f"✅ whisper-cli 已編譯")
+        print(f"✅ whisper-cli already compiled")
     
     return whisper_cli
 
 
 def ensure_model(whisper_root: Path, model_name: str) -> Path:
     """
-    確保單一模型已下載
-    model_name 例如: "base.en" 或 "small.en"
+    Ensure a single model is downloaded
+    model_name example: "base.en" or "small.en"
     """
     models_dir = whisper_root / "models"
     model_file = models_dir / f"ggml-{model_name}.bin"
     
-    print(f"\n🔍 檢查模型: {model_name}")
+    print(f"\n🔍 Checking model: {model_name}")
     
-    # 檢查模型是否存在
+    # Check if model exists
     if model_file.exists() and model_file.stat().st_size > 0:
-        print(f"✅ 模型已存在: {model_file.name}")
+        print(f"✅ Model already exists: {model_file.name}")
         return model_file
     
-    # 模型不存在，使用官方腳本下載
-    print(f"⬇️  下載模型: {model_name}")
+    # Model doesn't exist, download using official script
+    print(f"⬇️  Downloading model: {model_name}")
     
     download_script = models_dir / "download-ggml-model.sh"
     
     if not download_script.exists():
-        raise FileNotFoundError(f"❌ 找不到下載腳本: {download_script}")
+        raise FileNotFoundError(f"❌ Download script not found: {download_script}")
     
     try:
         # sh ./models/download-ggml-model.sh base.en
@@ -149,27 +149,27 @@ def ensure_model(whisper_root: Path, model_name: str) -> Path:
             ["sh", str(download_script), model_name],
             cwd=whisper_root,
             check=True,
-            capture_output=False  # 讓使用者看到下載進度
+            capture_output=False  # Let user see download progress
         )
         
-        # 再次檢查模型是否下載成功
+        # Check again if model download was successful
         if model_file.exists() and model_file.stat().st_size > 0:
-            print(f"✅ 模型下載完成: {model_file.name}")
+            print(f"✅ Model download complete: {model_file.name}")
             return model_file
         else:
-            raise RuntimeError(f"❌ 模型下載後仍不存在: {model_file}")
+            raise RuntimeError(f"❌ Model still not found after download: {model_file}")
             
     except CalledProcessError as e:
-        raise RuntimeError(f"❌ 模型下載失敗: {model_name}\n{e}")
+        raise RuntimeError(f"❌ Model download failed: {model_name}\n{e}")
 
 
 def init_whisper_environment(whisper_root: Path, models: list[str]) -> dict:
     """
-    完整初始化 whisper 環境
+    Complete initialization of whisper environment
     
     Args:
-        whisper_root: whisper.cpp 的根目錄
-        models: 要下載的模型列表，例如 ["base.en", "small.en"]
+        whisper_root: Root directory of whisper.cpp
+        models: List of models to download, e.g. ["base.en", "small.en"]
     
     Returns:
         dict: {
@@ -178,28 +178,28 @@ def init_whisper_environment(whisper_root: Path, models: list[str]) -> dict:
         }
     """
     print("=" * 60)
-    print("🚀 開始初始化 whisper 環境")
+    print("🚀 Starting whisper environment initialization")
     print("=" * 60)
     
-    # 1. 檢查必要工具
+    # 1. Check required tools
     check_git()
     check_cmake()
     
-    # 2. 確保 whisper.cpp 存在並編譯
+    # 2. Ensure whisper.cpp exists and is compiled
     whisper_cli = ensure_whisper_cpp(whisper_root)
     
-    # 3. 下載所有需要的模型
+    # 3. Download all required models
     downloaded_models = {}
     for model_name in models:
         model_path = ensure_model(whisper_root, model_name)
         downloaded_models[model_name] = model_path
     
     print("\n" + "=" * 60)
-    print("✅ 初始化完成！")
+    print("✅ Initialization complete!")
     print("=" * 60)
     print(f"whisper-cli: {whisper_cli}")
     for name, path in downloaded_models.items():
-        print(f"模型 {name}: {path}")
+        print(f"Model {name}: {path}")
     
     return {
         "whisper_cli": whisper_cli,
@@ -208,7 +208,7 @@ def init_whisper_environment(whisper_root: Path, models: list[str]) -> dict:
 
 # -------- main --------
 def main():
-    # 偵測 repo 根目錄（此檔在 python_pipeline 下）
+    # Detect repo root directory (this file is in python_pipeline)
     repo_root = Path(__file__).resolve().parents[1]
     env_path  = repo_root / ".env"
     env = load_env(env_path)
@@ -216,13 +216,13 @@ def main():
     whisper_root_path = Path(env.get("WHISPER_ROOT", "")).expanduser()
     whisper_root = whisper_root_path.resolve()
 
-    # 取其他變數
+    # Get other variables
     records_dir = Path(os.path.expanduser(env.get("MEETING_RECORDS_DIR", f"{Path.home()}/MeetingRecords"))).resolve()
     transcripts_dir = Path(os.path.expanduser(env.get("TRANSCRIPTS_DIR", f"{Path.home()}/MeetingRecords/Transcripts"))).resolve()
     preferred = env.get("PREFERRED_MODEL", "small")
     default_language = env.get("DEFAULT_LANGUAGE", "en")
     
-    # 動態組合模型名稱
+    # Dynamically compose model names
     models_to_download = [
         f"{preferred}.{default_language}", 
         f"base.{default_language}"
@@ -238,27 +238,27 @@ def main():
     print("  • DEFAULT_LANGUAGE :", default_language)
     print()
 
-    # 建資料夾
+    # Create directories
     ensure_dir(records_dir)
     ensure_dir(transcripts_dir)
     ensure_dir(whisper_root / "models")
     ensure_dir(repo_root / "logs")
-    print("✅ folders ready")
+    print("✅ Folders ready")
 
     ensure_ffmpeg()
 
     try:
         result = init_whisper_environment(whisper_root, models_to_download)
-        print("\n🎉 所有設定完成，可以開始使用了！")
+        print("\n🎉 All setup complete, ready to use!")
     except Exception as e:
-        print(f"\n❌ 初始化失敗: {e}")
+        print(f"\n❌ Initialization failed: {e}")
         sys.exit(1)
 
-    # 印出最終結果
+    # Print final results
     print("\n🎉 Ready to go!")
     print("  • whisper-cli     :", result["whisper_cli"])
     
-    # 動態印出模型（避免硬編碼）
+    # Dynamically print models (avoid hardcoding)
     for model_name, model_path in result["models"].items():
         print(f"  • model {model_name:8} :", model_path)
     
