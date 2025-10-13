@@ -30,7 +30,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # cd ... && pwd：切換到該目錄並取得絕對路徑
 
 # 載入 .env 檔案
-ENV_FILE="$SCRIPT_DIR/.env"
+ENV_FILE="$SCRIPT_DIR/../.env"
 
 if [ ! -f "$ENV_FILE" ]; then
     echo "[!] Environment file not found: $ENV_FILE"

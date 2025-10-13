@@ -15,11 +15,15 @@ set -euo pipefail
 # =======================
 
 # ====== 環境變數載入區塊 ======
+# 取得腳本所在目錄
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# 載入 .env 檔案
+ENV_FILE="$SCRIPT_DIR/../.env"
 
 # 載入 .env 檔案（如果存在）
-if [ -f ".env" ]; then
+if [ -f "$ENV_FILE" ]; then
     set -a  # 自動匯出所有變數
-    source .env
+    source "$ENV_FILE"
     set +a  # 關閉自動匯出
     echo "[*] Loaded configuration from .env"
 else
