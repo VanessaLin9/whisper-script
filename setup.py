@@ -1,4 +1,5 @@
-import os, re, shutil, subprocess, sys
+import argparse
+import os, re, shlex, shutil, subprocess, sys
 from subprocess import CalledProcessError
 from pathlib import Path
 
@@ -11,7 +12,11 @@ def load_env(env_path: Path) -> dict:
         if not line or line.strip().startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
-        env[k.strip()] = os.path.expandvars(v.strip().strip('"').strip("'"))
+        try:
+            parsed = shlex.split(v, comments=True, posix=True)
+        except ValueError as exc:
+            raise ValueError(f"Invalid .env value for {k.strip()}: {exc}") from exc
+        env[k.strip()] = os.path.expandvars(" ".join(parsed))
     return env
 
 # -------- folder helpers --------
@@ -123,7 +128,7 @@ def ensure_whisper_cpp(whisper_root: Path) -> Path:
 def ensure_model(whisper_root: Path, model_name: str) -> Path:
     """
     Ensure a single model is downloaded
-    model_name example: "base.en" or "small.en"
+    model_name example: "base" or "small" for multilingual transcription
     """
     models_dir = whisper_root / "models"
     model_file = models_dir / f"ggml-{model_name}.bin"
@@ -144,7 +149,7 @@ def ensure_model(whisper_root: Path, model_name: str) -> Path:
         raise FileNotFoundError(f"❌ Download script not found: {download_script}")
     
     try:
-        # sh ./models/download-ggml-model.sh base.en
+        # sh ./models/download-ggml-model.sh base
         subprocess.run(
             ["sh", str(download_script), model_name],
             cwd=whisper_root,
@@ -169,12 +174,12 @@ def init_whisper_environment(whisper_root: Path, models: list[str]) -> dict:
     
     Args:
         whisper_root: Root directory of whisper.cpp
-        models: List of models to download, e.g. ["base.en", "small.en"]
+        models: List of models to download, e.g. ["base", "small"]
     
     Returns:
         dict: {
             "whisper_cli": Path,
-            "models": {"base.en": Path, "small.en": Path}
+            "models": {"base": Path, "small": Path}
         }
     """
     print("=" * 60)
@@ -207,9 +212,59 @@ def init_whisper_environment(whisper_root: Path, models: list[str]) -> dict:
     }
 
 # -------- main --------
+def check_environment(whisper_root: Path, models: list[str], directories: list[Path]) -> bool:
+    """Report environment readiness without installing or modifying anything."""
+    checks = [
+        ("git", which("git")),
+        ("cmake", which("cmake")),
+        ("ffmpeg", which("ffmpeg")),
+        ("whisper.cpp", whisper_root if (whisper_root / "CMakeLists.txt").is_file() else None),
+        (
+            "whisper-cli",
+            whisper_root / "build" / "bin" / "whisper-cli"
+            if (whisper_root / "build" / "bin" / "whisper-cli").is_file()
+            else None,
+        ),
+    ]
+
+    for model_name in models:
+        model_path = whisper_root / "models" / f"ggml-{model_name}.bin"
+        checks.append((f"model {model_name}", model_path if model_path.is_file() and model_path.stat().st_size > 0 else None))
+
+    print("\nEnvironment check")
+    print("=" * 60)
+    ready = True
+    for label, value in checks:
+        if value:
+            print(f"✅ {label}: {value}")
+        else:
+            print(f"❌ {label}: not found")
+            ready = False
+
+    for directory in directories:
+        if directory.is_dir():
+            print(f"✅ directory: {directory}")
+        else:
+            print(f"⚠️  directory will be created during install: {directory}")
+
+    print("=" * 60)
+    print("✅ Environment is ready" if ready else "❌ Environment is not ready; run: python3 setup.py install")
+    return ready
+
+
 def main():
-    # Detect repo root directory (this file is in python_pipeline)
-    repo_root = Path(__file__).resolve().parents[1]
+    parser = argparse.ArgumentParser(description="Set up and validate the Whisper Script environment")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=("check", "install"),
+        default="check",
+        help="check only reports status; install may create directories, build whisper.cpp, and download models",
+    )
+    args = parser.parse_args()
+
+    # setup.py lives at the repository root.
+    repo_root = Path(__file__).resolve().parent
     env_path  = repo_root / ".env"
     env = load_env(env_path)
 
@@ -220,13 +275,11 @@ def main():
     records_dir = Path(os.path.expanduser(env.get("MEETING_RECORDS_DIR", f"{Path.home()}/MeetingRecords"))).resolve()
     transcripts_dir = Path(os.path.expanduser(env.get("TRANSCRIPTS_DIR", f"{Path.home()}/MeetingRecords/Transcripts"))).resolve()
     preferred = env.get("PREFERRED_MODEL", "small")
-    default_language = env.get("DEFAULT_LANGUAGE", "en")
+    default_language = env.get("DEFAULT_LANGUAGE", "zh")
     
-    # Dynamically compose model names
-    models_to_download = [
-        f"{preferred}.{default_language}", 
-        f"base.{default_language}"
-    ]
+    # Model names and spoken language are independent. Models without the
+    # ".en" suffix are multilingual and can transcribe Chinese with English.
+    models_to_download = [preferred]
 
     print("🔧 Init summary")
     print("  • Repo root        :", repo_root)
@@ -237,6 +290,14 @@ def main():
     print("  • PREFERRED_MODEL  :", preferred)
     print("  • DEFAULT_LANGUAGE :", default_language)
     print()
+
+    if args.command == "check":
+        ready = check_environment(
+            whisper_root,
+            models_to_download,
+            [records_dir, transcripts_dir, repo_root / "logs"],
+        )
+        return 0 if ready else 1
 
     # Create directories
     ensure_dir(records_dir)
@@ -264,10 +325,11 @@ def main():
     
     print("  • recordings      :", records_dir)
     print("  • transcripts     :", transcripts_dir)
+    return 0
 
 if __name__ == "__main__":
     try:
-        main()
+        sys.exit(main())
     except Exception as e:
         print("❌ Init failed:", e)
         sys.exit(1)

@@ -5,7 +5,7 @@ set -euo pipefail
 # 設定腳本執行的嚴格模式
 
 # =======================
-# 手動轉錄長時間英語會議音訊（支援多口音）- 環境變數版本
+# 手動轉錄長時間多語言會議音訊（中文為主，可夾雜英文）- 環境變數版本
 # - 提示輸入音訊檔案路徑
 # - 將音訊正規化為指定格式的 WAV
 # - 使用 Whisper.cpp 模型進行轉錄
@@ -39,7 +39,7 @@ fi
 WHISPER_ROOT="${WHISPER_ROOT:-/Users/samuelwong/whisper.cpp}"
 MEETING_RECORDS_DIR="${MEETING_RECORDS_DIR:-$HOME/MeetingRecords}"
 TRANSCRIPTS_DIR="${TRANSCRIPTS_DIR:-$HOME/MeetingRecords/Transcripts}"
-DEFAULT_LANGUAGE="${DEFAULT_LANGUAGE:-en}"
+DEFAULT_LANGUAGE="${DEFAULT_LANGUAGE:-zh}"
 PREFERRED_MODEL="${PREFERRED_MODEL:-small}"
 
 # 展開環境變數（如果包含 $HOME）
@@ -51,8 +51,8 @@ TRANSCRIPTS_DIR=$(eval echo "$TRANSCRIPTS_DIR")
 
 BIN="$WHISPER_ROOT/build/bin"
 MODELS_DIR="$WHISPER_ROOT/models"
-MODEL_PREFERRED="$MODELS_DIR/ggml-${PREFERRED_MODEL}.en.bin"
-MODEL_BASE="$MODELS_DIR/ggml-base.en.bin"
+MODEL_PREFERRED="$MODELS_DIR/ggml-${PREFERRED_MODEL}.bin"
+MODEL_BASE="$MODELS_DIR/ggml-base.bin"
 
 # 建立輸出目錄
 mkdir -p "$TRANSCRIPTS_DIR"
@@ -99,8 +99,8 @@ elif [ -f "$MODEL_BASE" ]; then
 else
     echo "[!] No suitable model found. Please download at least one:"
     echo "    cd $WHISPER_ROOT"
-    echo "    bash ./models/download-ggml-model.sh ${PREFERRED_MODEL}.en"
-    echo "    or: bash ./models/download-ggml-model.sh base.en"
+    echo "    bash ./models/download-ggml-model.sh ${PREFERRED_MODEL}"
+    echo "    or: bash ./models/download-ggml-model.sh base"
     exit 1
 fi
 

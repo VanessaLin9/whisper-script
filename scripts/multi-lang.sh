@@ -22,10 +22,12 @@ fi
 
 WHISPER_ROOT="${WHISPER_ROOT:-}"
 PREFERRED_MODEL="${PREFERRED_MODEL:-small}"
+DEFAULT_LANGUAGE="${DEFAULT_LANGUAGE:-zh}"
 
 # 展開環境變數
 WHISPER_ROOT=$(eval echo "$WHISPER_ROOT")
 PREFERRED_MODEL=$(eval echo "$PREFERRED_MODEL")
+DEFAULT_LANGUAGE=$(eval echo "$DEFAULT_LANGUAGE")
 
 BIN="$WHISPER_ROOT/build/bin"
 MODELS_DIR="$WHISPER_ROOT/models"
@@ -71,6 +73,7 @@ fi
 echo "[*] Configuration:"
 echo "    Whisper root: $WHISPER_ROOT"
 echo "    Model: $(basename "$MODEL")"
+echo "    Language: $DEFAULT_LANGUAGE"
 echo "    Threads: $THREADS"
 echo "    Segments folder: $SEGMENTS_DIR"
 echo
@@ -141,7 +144,7 @@ for i in "${!SEGMENTS[@]}"; do
     if "$BIN/whisper-cli" \
         -m "$MODEL" \
         -f "$SEGMENT" \
-        --language auto \
+        --language "$DEFAULT_LANGUAGE" \
         --threads "$THREADS" \
         --output-txt \
         --output-srt \

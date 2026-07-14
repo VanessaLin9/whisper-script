@@ -1,249 +1,239 @@
-# Whisper Script Collection | Whisper 腳本集合
+# Whisper Script Collection｜Whisper 會議轉錄工具
 
-Bash scripts for meeting transcription using [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) with environment-based configuration.  
-使用 [Whisper.cpp](https://github.com/ggerganov/whisper.cpp) 進行會議轉錄的 Bash 腳本，支援透過環境變數進行設定。
+這是一套以 [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 為核心、針對 macOS 設計的會議錄音與轉錄腳本。
 
-## Features | 功能特色
+目前預設使用多語言 `small` 模型，主要語言設定為中文（`zh`），適合中文為主、夾雜英文專有名詞的會議。請勿改用 `small.en`；`.en` 是英文專用模型，無法可靠處理中文。
 
-- **Live meeting recording** with automatic transcription  
-  **即時錄音與轉錄**：會議進行中同步錄音，結束時自動轉錄
-- **Batch audio transcription** for existing files  
-  **批次音檔轉錄**：可將既有音訊檔批次轉換成文字
-- **Multiple formats**: TXT, SRT, VTT, JSON  
-  **多種輸出格式**：TXT、SRT、VTT、JSON
-- **Environment-based configuration** via `.env` files  
-  **環境變數設定**：透過 `.env` 檔案輕鬆配置
-- **Smart model selection** with fallback  
-  **智慧模型選擇**：優先使用指定模型，必要時自動切換備用模型
-- **macOS optimized** with AVFoundation  
-  **macOS 優化**：整合 AVFoundation，效能更佳
+## 功能
 
-## Scripts | 腳本說明
+- 使用 macOS AVFoundation 錄製會議，停止後自動轉錄
+- 將既有音訊正規化為 16 kHz 單聲道 WAV 後轉錄
+- 輸出 TXT、SRT、VTT 與 JSON
+- 使用 `.env` 管理 whisper.cpp、輸出目錄、語言及模型設定
+- 使用 `setup.py check` 做唯讀環境檢查
+- 使用 `setup.py install` 編譯 whisper.cpp、下載模型並準備環境
 
-### 1. `meeting-assist-chunked.sh` - Live Recording & Transcription | 即時錄音與轉錄
-Records meetings in real-time and transcribes when stopped (Ctrl+C).  
-支援即時錄音，並在手動停止（Ctrl+C）後自動生成逐字稿。
+## 新電腦安裝流程
 
-**Features | 功能：**
-- Continuous recording with automatic transcription  
-  持續錄音並於結束時自動轉錄
-- Smart model selection (prefers `small.en`, fallback to `base.en`)  
-  智慧選擇模型（優先 `small.en`，備用 `base.en`）
-- Outputs: audio, TXT, SRT files  
-  輸出檔案：音訊、TXT、SRT
-- Environment-based configuration  
-  可透過環境變數設定參數
+### 1. 安裝基本工具
 
-### 2. `transcribe-meeting.sh` - Batch Transcription | 批次轉錄
-Transcribes existing audio files with preprocessing.  
-將現有音訊檔進行預處理（格式化）後轉錄成文字。
-
-**Features | 功能：**
-- Audio normalization to 16kHz mono WAV  
-  音訊自動轉換為 16kHz 單聲道 WAV
-- Multiple output formats (TXT, SRT, VTT, JSON)  
-  支援多種輸出格式（TXT、SRT、VTT、JSON）
-- Clipboard integration (macOS)  
-  支援與 macOS 剪貼簿整合
-- Drag & drop file support  
-  支援拖曳檔案輸入
-
-## Setup | 安裝設定
-
-### 1. Manual Prerequisites | 手動安裝前置需求
-
-**You need to install these manually first | 請先手動安裝以下項目：**
+請先安裝 [Homebrew](https://brew.sh/)；若已安裝可跳過。
 
 ```bash
-# Install Homebrew (if not already installed) | 安裝 Homebrew（如果尚未安裝）
 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-
-# Install basic tools | 安裝基本工具
-brew install git cmake
-
-# Clone Whisper.cpp | 克隆 Whisper.cpp
-git clone https://github.com/ggerganov/whisper.cpp.git ~/whisper.cpp
 ```
 
-### 2. Configure Environment | 配置環境變數
+安裝 Git 與 CMake：
 
 ```bash
-# Copy and edit configuration | 複製並編輯設定檔
+brew install git cmake
+```
+
+### 2. Clone whisper.cpp
+
+本專案不包含 whisper.cpp 本體，請另外 clone：
+
+```bash
+git clone https://github.com/ggml-org/whisper.cpp.git ~/whisper.cpp
+```
+
+### 3. 建立本機設定
+
+在本專案根目錄執行：
+
+```bash
 cp .env.example .env
-nano .env  # Edit paths to match your setup | 編輯路徑以符合實際環境
 ```
 
-**Required setting in `.env` | `.env` 中必須設定：**
+編輯 `.env`，確認 `WHISPER_ROOT` 指向剛才 clone 的 whisper.cpp：
+
 ```bash
-WHISPER_ROOT=/Users/yourusername/whisper.cpp  # Path to your whisper.cpp clone | 您的 whisper.cpp 路徑
+WHISPER_ROOT=/Users/你的帳號/whisper.cpp
 ```
 
-### 3. Automated Setup | 自動化設定
+`.env` 只供本機使用，已被 Git 忽略，不應 commit。
+
+### 4. 檢查環境
 
 ```bash
-# Run the automated setup script | 執行自動化設定腳本
-python3 python_pipeline/init_env.py
+python3 setup.py check
 ```
 
-**What the script does automatically | 腳本會自動處理：**
-- ✅ Compiles Whisper.cpp | 編譯 Whisper.cpp
-- ✅ Downloads required models | 下載所需模型
-- ✅ Installs FFmpeg (macOS) | 安裝 FFmpeg (macOS)
-- ✅ Creates output directories | 建立輸出目錄
-- ✅ Validates environment | 驗證環境設定
+`check` 是唯讀操作，不會安裝套件、編譯程式、下載模型或建立輸出目錄。它會檢查：
 
-### 4. Python Pipeline | Python 管道
+- Git、CMake、FFmpeg
+- `WHISPER_ROOT` 與 whisper.cpp
+- `whisper-cli`
+- 設定的多語言模型（預設為 `small`）
+- 錄音、逐字稿及 log 目錄
 
-The project includes a Python setup pipeline for automated environment initialization | 專案包含 Python 設定管道，用於自動化環境初始化：
+第一次執行時看到部分項目尚未就緒是正常的。
+
+### 5. 執行安裝
 
 ```bash
-# Run setup (one-time) | 執行設定（一次性）
-python3 python_pipeline/init_env.py
-
-# Main pipeline entry point | 主要管道入口點
-python3 python_pipeline/main_pipeline.py
+python3 setup.py install
 ```
 
-**Pipeline features | 管道功能：**
-- 🔧 **Environment validation** | 環境驗證
-- 📦 **Dependency management** | 依賴管理
-- 🏗️ **Automated building** | 自動化建置
-- 📁 **Directory structure** | 目錄結構管理
-- ✅ **Health checks** | 健康檢查
+`install` 會：
 
-### Quick Setup Summary | 快速設定摘要
+- 在 macOS 上透過 Homebrew 安裝缺少的 FFmpeg
+- 編譯 `WHISPER_ROOT` 中的 whisper.cpp
+- 依 `PREFERRED_MODEL` 下載多語言模型（預設只下載 `small`）
+- 建立錄音、逐字稿與 log 目錄
 
-**Step 1-2: Manual (one-time) | 步驟 1-2：手動（一次性）**
+這個步驟會連線網路，且可能需要一段時間。
+
+### 6. 再次驗證
+
 ```bash
-brew install git cmake
-git clone https://github.com/ggerganov/whisper.cpp.git ~/whisper.cpp
-cp .env.example .env && nano .env  # Set WHISPER_ROOT
+python3 setup.py check
 ```
 
-**Step 3: Automated | 步驟 3：自動化**
-```bash
-python3 python_pipeline/init_env.py  # Does everything else!
-```
+準備完成時，Git、CMake、FFmpeg、whisper.cpp、`whisper-cli` 和 `model small` 應全部顯示成功。
 
-**Step 4: Ready to use! | 步驟 4：準備使用！**
-```bash
-./meeting-assist-chunked.sh    # Live recording
-./transcribe-meeting.sh        # Batch transcription
-```
+## 設定
 
-## Configuration | 配置說明
-
-Edit `.env` file with your paths | 編輯 `.env` 檔案設定路徑：
+`.env.example` 的預設設定如下：
 
 ```bash
-# Required | 必要參數
-WHISPER_ROOT=/Users/yourusername/whisper.cpp
+# 必填：whisper.cpp clone 的位置
+WHISPER_ROOT=/Users/YourName/whisper.cpp
 
-# Optional (with defaults) | 可選參數（有預設值）
+# 輸出目錄
 MEETING_RECORDS_DIR=$HOME/MeetingRecords
 TRANSCRIPTS_DIR=$HOME/MeetingRecords/Transcripts
-MIC_DEVICE=:0                    # :0 = built-in Mac microphone | :0 = Mac 內建麥克風
-DEFAULT_LANGUAGE=en
-PREFERRED_MODEL=small            # small, base, tiny, etc. | small, base, tiny 等
-THREADS=8                        # Auto-detected if not set | 未設定時自動偵測
+
+# macOS AVFoundation 麥克風裝置
+MIC_DEVICE=:0
+
+# 中文為主、可夾雜英文的多語言轉錄
+DEFAULT_LANGUAGE="zh"
+PREFERRED_MODEL="small"
+
+# 選填；未設定時自動偵測 CPU logical cores
+# THREADS=8
 ```
 
-**Audio devices | 音訊設備：** Run `ffmpeg -f avfoundation -list_devices true -i ""` to see available devices.  
-音訊設備：執行 `ffmpeg -f avfoundation -list_devices true -i ""` 可查看可用裝置。
+模型名稱與語言是兩個不同設定：
 
-## Usage | 使用方法
+- `PREFERRED_MODEL="small"` 對應 `ggml-small.bin` 多語言模型
+- `DEFAULT_LANGUAGE="zh"` 告訴 Whisper 會議主要是中文
+- 不要寫成 `small.zh`，whisper.cpp 沒有這個模型
+- 不要使用 `small.en`，它是英文專用模型
 
-### Live Recording | 即時錄音
+列出 macOS 可用錄音裝置：
+
 ```bash
-./meeting-assist-chunked.sh
-# Press Ctrl+C to stop and transcribe | 按 Ctrl+C 停止並轉錄
+ffmpeg -f avfoundation -list_devices true -i ""
 ```
 
-### Batch Transcription | 批次轉錄
+如果內建麥克風不是 `:0`，請依輸出結果調整 `MIC_DEVICE`。
+
+## 使用方式
+
+### 即時錄音並在結束後轉錄
+
 ```bash
-./transcribe-meeting.sh
-# Drag & drop audio file or type path | 拖放音訊檔案或輸入路徑
+./scripts/record-meeting.sh
 ```
 
-**Output files | 輸出檔案：**
-- Audio | 音訊: `meeting_YYYYMMDD_HHMMSS.wav`
-- Transcript | 逐字稿: `meeting_YYYYMMDD_HHMMSS.txt`
-- Subtitles | 字幕: `meeting_YYYYMMDD_HHMMSS.srt`
-- WebVTT: `meeting_YYYYMMDD_HHMMSS.vtt` (batch only | 僅批次轉錄)
-- JSON: `meeting_YYYYMMDD_HHMMSS.json` (batch only | 僅批次轉錄)
+按 `Ctrl+C` 停止錄音，腳本會接著執行轉錄。
 
-## Models | 模型說明
+輸出至 `MEETING_RECORDS_DIR`：
 
-**Preference order | 優先順序：**
-1. `small.en` - Best speed/accuracy balance | 速度與準確度最佳平衡
-2. `base.en` - Faster fallback | 較快的備用方案
+- `meeting_YYYYMMDD_HHMMSS.wav`
+- `meeting_YYYYMMDD_HHMMSS.txt`
+- `meeting_YYYYMMDD_HHMMSS.srt`
+- `ffmpeg_YYYYMMDD_HHMMSS.log`
 
-Models auto-download to `models/` directory.  
-模型會自動下載到 `models/` 目錄。
+### 轉錄既有音訊
 
-## Troubleshooting | 故障排除
-
-**"Python script fails" | "Python 腳本失敗"**
 ```bash
-# Re-run the automated setup | 重新執行自動化設定
-python3 python_pipeline/init_env.py
+./scripts/transcribe-english.sh
 ```
 
-**"whisper-cli not found" | "找不到 whisper-cli"**
+依提示輸入或拖入音訊路徑。雖然檔名仍保留舊名稱 `transcribe-english.sh`，目前程式已使用多語言模型，預設以中文為主要語言。
+
+輸出至 `TRANSCRIPTS_DIR`：
+
+- `檔名_norm16k.wav`
+- `檔名_transcription.txt`
+- `檔名_transcription.srt`
+- `檔名_transcription.vtt`
+- `檔名_transcription.json`
+
+### 轉錄已切割的音訊片段
+
+若資料夾中已有 `segment_001.wav`、`segment_002.wav` 等檔案：
+
 ```bash
-# Manual compilation if needed | 如需要可手動編譯
-cd $WHISPER_ROOT && cmake --build build -j
+./scripts/multi-lang.sh /path/to/segments_folder
 ```
 
-**"No model found" | "找不到模型"**
+結果會寫入該資料夾下的 `transcripts/`。
+
+## 疑難排解
+
+### `.env` 找不到
+
+請確認命令是在專案根目錄執行，並建立本機設定：
+
 ```bash
-# Manual model download | 手動下載模型
-bash ./models/download-ggml-model.sh small.en
+cp .env.example .env
 ```
 
-**"Missing dependencies" | "缺少依賴套件"**
+### whisper.cpp 找不到
+
+確認 `.env` 的 `WHISPER_ROOT` 是完整的 whisper.cpp repo，且其中存在 `CMakeLists.txt`：
+
 ```bash
-# Install missing tools | 安裝缺少的工具
-brew install git cmake ffmpeg
+python3 setup.py check
 ```
 
-**"Recording file missing/empty" | "錄音檔案遺失或空白"**
-- Check mic permissions in System Preferences | 檢查系統偏好設定中的麥克風權限
-- Verify device ID: `ffmpeg -f avfoundation -list_devices true -i ""` | 確認設備 ID
+### FFmpeg、whisper-cli 或模型缺少
 
-**".env file not found" | "找不到 .env 檔案"**
+先查看檢查結果：
+
 ```bash
-cp .env.example .env && nano .env
+python3 setup.py check
 ```
 
-## Files | 檔案結構
+再由專案安裝流程處理：
 
+```bash
+python3 setup.py install
 ```
+
+請保留終端完整錯誤訊息，以便判斷失敗發生在 Homebrew、CMake 或模型下載階段。
+
+### 錄音檔為空或無法錄音
+
+- 到 macOS「系統設定 → 隱私權與安全性 → 麥克風」允許 Terminal 使用麥克風
+- 使用 FFmpeg 列出裝置並修正 `.env` 中的 `MIC_DEVICE`
+- 查看 `MEETING_RECORDS_DIR` 中對應的 `ffmpeg_*.log`
+
+## 專案結構
+
+```text
 whisper-script/
-├── .env.example                 # Configuration template | 配置範本
-├── .env                         # Your configuration (ignored by git) | 使用者配置（git 忽略）
-├── meeting-assist-chunked.sh    # Live recording + transcription | 即時錄音 + 轉錄
-├── transcribe-meeting.sh        # Batch transcription | 批次轉錄
-├── python_pipeline/             # Python automation pipeline | Python 自動化管道
-│   ├── init_env.py              # Environment setup script | 環境設定腳本
-│   ├── main_pipeline.py         # Main pipeline entry | 主要管道入口
-│   └─── config.yaml              # Pipeline configuration | 管道配置
-└── README.md
-
-~/MeetingRecords/                # Live recording output | 即時錄音輸出
-├── meeting_YYYYMMDD_HHMMSS.wav  # Audio | 音訊
-├── meeting_YYYYMMDD_HHMMSS.txt  # Transcript | 逐字稿
-└── meeting_YYYYMMDD_HHMMSS.srt  # Subtitles | 字幕
-
-~/MeetingRecords/Transcripts/    # Batch transcription output | 批次轉錄輸出
-├── filename_norm16k.wav         # Normalized audio | 正規化音訊
-├── filename_transcription.txt   # Transcript | 逐字稿
-├── filename_transcription.srt   # Subtitles | 字幕
-├── filename_transcription.vtt   # WebVTT
-└── filename_transcription.json  # JSON data | JSON 資料
-
+├── .env.example
+├── README.md
+├── setup.py
+├── cli.py
+├── scripts/
+│   ├── record-meeting.sh
+│   ├── transcribe-english.sh
+│   └── multi-lang.sh
+├── pipelines/
+│   └── multilang_batch.py
+└── src/
+    ├── preprocessing/
+    │   └── audio_splitter.py
+    └── postprocessing/
+        └── cleaner.py
 ```
-## License | 授權
 
-Open source - use freely for personal and professional transcription workflows.  
-開源專案 - 可自由用於個人或專業的會議轉錄工作流程。
+## License
+
+Open source — 可自由用於個人或專業的會議轉錄工作流程。

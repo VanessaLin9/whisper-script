@@ -10,7 +10,7 @@ set -euo pipefail
 ###############################################################################
 # Meeting Assist (完整錄音 + 會後轉錄) - 環境變數版本
 # - 全程錄音：完整音訊檔案
-# - 會後轉錄：使用 small.en 模型（較準確）
+# - 會後轉錄：使用多語言 small 模型（中文為主，可夾雜英文）
 # - 使用 .env 檔案管理設定，避免硬編碼路徑
 #
 # 使用前請先：
@@ -68,7 +68,7 @@ fi
 MEETING_RECORDS_DIR="${MEETING_RECORDS_DIR:-$HOME/MeetingRecords}"
 TRANSCRIPTS_DIR="${TRANSCRIPTS_DIR:-$HOME/MeetingRecords/Transcripts}"
 MIC_DEVICE="${MIC_DEVICE:-:0}"
-DEFAULT_LANGUAGE="${DEFAULT_LANGUAGE:-en}"
+DEFAULT_LANGUAGE="${DEFAULT_LANGUAGE:-zh}"
 PREFERRED_MODEL="${PREFERRED_MODEL:-small}"
 
 # 固定的音訊設定（這些通常不需要改變）
@@ -87,8 +87,8 @@ BIN="$WHISPER_ROOT/build/bin"          # whisper 可執行檔位置
 MODELS_DIR="$WHISPER_ROOT/models"      # AI 模型檔案位置
 
 # 根據偏好模型建構檔案路徑
-FINAL_MODEL="$MODELS_DIR/ggml-${PREFERRED_MODEL}.en.bin"
-FALLBACK_MODEL="$MODELS_DIR/ggml-base.en.bin"
+FINAL_MODEL="$MODELS_DIR/ggml-${PREFERRED_MODEL}.bin"
+FALLBACK_MODEL="$MODELS_DIR/ggml-base.bin"
 
 # ====== 系統設定區塊 ======
 
@@ -127,8 +127,8 @@ if [ ! -f "$FINAL_MODEL" ]; then
         echo "[!] Fallback model also not found: $FALLBACK_MODEL"
         echo "    Please download at least one model:"
         echo "      cd $WHISPER_ROOT"
-        echo "      bash ./models/download-ggml-model.sh ${PREFERRED_MODEL}.en"
-        echo "      or: bash ./models/download-ggml-model.sh base.en"
+        echo "      bash ./models/download-ggml-model.sh ${PREFERRED_MODEL}"
+        echo "      or: bash ./models/download-ggml-model.sh base"
         exit 1
     else
         echo "[i] Will use fallback model: $(basename "$FALLBACK_MODEL")"
