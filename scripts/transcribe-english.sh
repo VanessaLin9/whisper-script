@@ -54,8 +54,8 @@ MODELS_DIR="$WHISPER_ROOT/models"
 MODEL_PREFERRED="$MODELS_DIR/ggml-${PREFERRED_MODEL}.bin"
 MODEL_BASE="$MODELS_DIR/ggml-base.bin"
 
-# 建立輸出目錄
-mkdir -p "$TRANSCRIPTS_DIR"
+# 建立錄音資料根目錄
+mkdir -p "$MEETING_RECORDS_DIR"
 
 # ====== 系統設定 ======
 
@@ -70,7 +70,7 @@ fi
 
 echo "[*] Configuration summary:"
 echo "    Whisper root: $WHISPER_ROOT"
-echo "    Transcripts dir: $TRANSCRIPTS_DIR"  
+echo "    Meeting records dir: $MEETING_RECORDS_DIR"
 echo "    Preferred model: $PREFERRED_MODEL"
 echo "    Language: $DEFAULT_LANGUAGE"
 echo "    Threads: $THREADS"
@@ -125,6 +125,22 @@ fi
 
 echo "[*] Input file: $IN"
 
+# 在開始轉錄前，依錄製日期時間建立會議資料夾並標準化檔名。
+# 原始輸入檔不會被移動或改名；helper 會複製一份到會議資料夾。
+ORGANIZER="$SCRIPT_DIR/organize_recording.py"
+if [ ! -f "$ORGANIZER" ]; then
+    echo "[!] Recording organizer not found: $ORGANIZER"
+    exit 1
+fi
+
+ORGANIZED_JSON="$(python3 "$ORGANIZER" "$IN" --records-dir "$MEETING_RECORDS_DIR")"
+MEETING_DIR="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["meeting_dir"])' <<< "$ORGANIZED_JSON")"
+IN="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["audio_file"])' <<< "$ORGANIZED_JSON")"
+stem="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["stem"])' <<< "$ORGANIZED_JSON")"
+
+echo "[*] Meeting folder: $MEETING_DIR"
+echo "[*] Standard audio: $IN"
+
 # 顯示音訊資訊（如果 ffprobe 可用）
 if command -v ffprobe >/dev/null 2>&1; then
     echo "[*] Probing duration with ffprobe..."
@@ -139,17 +155,17 @@ fi
 
 # ====== 音訊正規化區塊 ======
 
-# 取得輸入檔案的基本名稱（不含路徑）
-base_in="$(basename "$IN")"
-# basename：取得路徑的檔名部分
-
-# 取得檔案名稱（不含副檔名）
-stem="${base_in%.*}"
-# ${VAR%pattern}：從變數末尾移除符合 pattern 的最短字串
-# %.*：移除最後一個點及其後的所有字元（即移除副檔名）
-
 # 建立正規化後的音訊檔案路徑
-NORM="$TRANSCRIPTS_DIR/${stem}_norm16k.wav"
+NORM="$MEETING_DIR/${stem}_norm16k.wav"
+OUT_BASE="$MEETING_DIR/${stem}_transcription"
+
+# 在 ffmpeg 使用 -y 前先完成衝突檢查，避免既有正規化音訊被覆蓋。
+for output in "$NORM" "${OUT_BASE}.txt" "${OUT_BASE}.srt" "${OUT_BASE}.vtt" "${OUT_BASE}.json"; do
+    if [ -e "$output" ]; then
+        echo "[!] Output already exists; refusing to overwrite: $output"
+        exit 1
+    fi
+done
 
 echo "[*] Normalizing audio to 16kHz mono WAV -> $NORM"
 
@@ -163,9 +179,6 @@ ffmpeg -y -i "$IN" -ac 1 -ar 16000 -c:a pcm_s16le "$NORM"
 #   -c:a pcm_s16le：音訊編碼為 16位元 PCM，小端序
 
 # ====== 轉錄執行區塊 ======
-
-# 建立輸出檔案的基本路徑
-OUT_BASE="$TRANSCRIPTS_DIR/${stem}_transcription"
 
 echo "[*] Starting transcription with $(basename "$MODEL")..."
 echo "    This may take a while for long recordings..."
@@ -211,5 +224,5 @@ echo "Config used    : $ENV_FILE"
 if command -v open >/dev/null 2>&1; then
     echo
     echo "[*] Opening output folder..."
-    open "$TRANSCRIPTS_DIR" >/dev/null 2>&1 || true
+    open "$MEETING_DIR" >/dev/null 2>&1 || true
 fi
