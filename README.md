@@ -155,7 +155,29 @@ ffmpeg -f avfoundation -list_devices true -i ""
 
 依提示輸入或拖入音訊路徑。雖然檔名仍保留舊名稱 `transcribe-english.sh`，目前程式已使用多語言模型，預設以中文為主要語言。
 
-輸出至 `TRANSCRIPTS_DIR`：
+腳本會先檢查錄音檔名中的日期時間。若檔名沒有
+`YYYY-MM-DD_HHMM` 前綴，會依序嘗試音訊 metadata、macOS 檔案建立時間、
+檔案修改時間，並讓你確認或輸入正確的錄製時間。
+
+原始錄音不會被移動或改名。腳本會在 `MEETING_RECORDS_DIR` 下建立
+`YYYY-MM-DD_HHMM` 會議資料夾，複製一份加上標準時間前綴的音訊，並將
+同次轉錄的所有產物寫入該資料夾。例如：
+
+```text
+MeetingRecords/
+└── 2026-07-17_1500/
+    ├── 2026-07-17_1500_原始檔名.m4a
+    ├── 2026-07-17_1500_原始檔名_norm16k.wav
+    ├── 2026-07-17_1500_原始檔名_transcription.txt
+    ├── 2026-07-17_1500_原始檔名_transcription.srt
+    ├── 2026-07-17_1500_原始檔名_transcription.vtt
+    └── 2026-07-17_1500_原始檔名_transcription.json
+```
+
+若輸入檔已具有標準前綴，腳本不會重複加入日期時間。若輸出產物已存在，
+腳本會停止而不是靜默覆蓋。
+
+每次轉錄會產生：
 
 - `檔名_norm16k.wav`
 - `檔名_transcription.txt`
@@ -232,11 +254,13 @@ whisper-script/
 ├── cli.py
 ├── scripts/
 │   ├── lib/common.sh
+│   ├── organize_recording.py
 │   ├── record-meeting.sh
 │   ├── transcribe-english.sh
 │   └── multi-lang.sh
 ├── tests/
-│   └── run_tests.sh
+│   ├── run_tests.sh
+│   └── test_organize_recording.py
 ├── pipelines/
 │   └── multilang_batch.py
 └── src/

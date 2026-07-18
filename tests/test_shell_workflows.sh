@@ -111,6 +111,7 @@ clone_project() {
     mkdir -p "${dest}/scripts/lib"
     cp "${ROOT}/env_loader.py" "${dest}/"
     cp "${ROOT}/scripts/lib/common.sh" "${dest}/scripts/lib/"
+    cp "${ROOT}/scripts/organize_recording.py" "${dest}/scripts/"
     cp "${ROOT}/scripts/multi-lang.sh" "${dest}/scripts/"
     cp "${ROOT}/scripts/record-meeting.sh" "${dest}/scripts/"
     cp "${ROOT}/scripts/transcribe-english.sh" "${dest}/scripts/"
