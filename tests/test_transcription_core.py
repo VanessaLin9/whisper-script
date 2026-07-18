@@ -27,6 +27,8 @@ class FakeRunner:
 
     fail_normalize: bool = False
     fail_whisper: bool = False
+    raise_on_normalize: BaseException | None = None
+    raise_on_whisper: BaseException | None = None
     skip_artifact: ArtifactKind | None = None
     calls: list[list[str]] | None = None
 
@@ -41,6 +43,8 @@ class FakeRunner:
         binary = Path(argv[0]).name
 
         if binary == "ffmpeg":
+            if self.raise_on_normalize is not None:
+                raise self.raise_on_normalize
             if self.fail_normalize:
                 return CommandResult(returncode=1, stdout="", stderr="ffmpeg boom")
             output = Path(argv[-1])
@@ -49,6 +53,8 @@ class FakeRunner:
             return CommandResult(returncode=0, stdout="", stderr="")
 
         if binary == "whisper-cli":
+            if self.raise_on_whisper is not None:
+                raise self.raise_on_whisper
             if self.fail_whisper:
                 return CommandResult(returncode=2, stdout="", stderr="whisper boom")
             output_file = _flag_value(argv, "--output-file")
@@ -229,6 +235,50 @@ class TranscriptionCoreTests(unittest.TestCase):
         self.assertEqual(command[0], "whisper-cli")
         self.assertIn("--output-json", command)
         self.assertIn("--output-txt", command)
+
+    def test_runner_raise_during_normalize_keeps_normalize_stage(self) -> None:
+        runner = FakeRunner(raise_on_normalize=FileNotFoundError("ffmpeg missing"))
+
+        with self.assertRaises(TranscriptionError) as ctx:
+            transcribe(self._request(), runner=runner, on_progress=self._on_progress)
+
+        self.assertEqual(ctx.exception.stage, Stage.NORMALIZE)
+        self.assertIsInstance(ctx.exception.cause, FileNotFoundError)
+        self.assertEqual(self.audio.read_bytes(), b"source-audio")
+        self.assertIn((Stage.NORMALIZE, ProgressStatus.FAILED), self.events)
+        self.assertEqual(len(runner.calls), 1)
+
+    def test_runner_raise_during_whisper_keeps_transcribe_stage(self) -> None:
+        runner = FakeRunner(raise_on_whisper=PermissionError("whisper-cli not executable"))
+
+        with self.assertRaises(TranscriptionError) as ctx:
+            transcribe(self._request(), runner=runner, on_progress=self._on_progress)
+
+        self.assertEqual(ctx.exception.stage, Stage.TRANSCRIBE)
+        self.assertIsInstance(ctx.exception.cause, PermissionError)
+        self.assertEqual(self.audio.read_bytes(), b"source-audio")
+        self.assertFalse((self.output_dir / "meeting_norm16k.wav").exists())
+        self.assertIn((Stage.TRANSCRIBE, ProgressStatus.FAILED), self.events)
+
+    def test_traversal_stem_rejected_before_runner(self) -> None:
+        runner = FakeRunner()
+        with self.assertRaises(TranscriptionError) as ctx:
+            transcribe(self._request(stem="../escape"), runner=runner)
+
+        self.assertEqual(ctx.exception.stage, Stage.VALIDATE_INPUT)
+        self.assertEqual(runner.calls, [])
+        self.assertFalse((self.root / "escape_norm16k.wav").exists())
+        self.assertEqual(self.audio.read_bytes(), b"source-audio")
+
+    def test_absolute_stem_rejected_before_runner(self) -> None:
+        runner = FakeRunner()
+        absolute_stem = str(self.root / "abs-stem")
+        with self.assertRaises(TranscriptionError) as ctx:
+            transcribe(self._request(stem=absolute_stem), runner=runner)
+
+        self.assertEqual(ctx.exception.stage, Stage.VALIDATE_INPUT)
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(self.audio.read_bytes(), b"source-audio")
 
 
 if __name__ == "__main__":

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .artifacts import (
     assert_no_output_conflicts,
+    assert_outputs_within_output_dir,
     normalized_audio_path,
     output_base,
     remove_paths,
@@ -66,6 +67,7 @@ def transcribe(
     created_paths: list[Path] = []
     audio_path = request.audio_path.expanduser().resolve()
     source_fingerprint = None
+    active_stage = Stage.VALIDATE_INPUT
 
     try:
         _emit(on_progress, Stage.VALIDATE_INPUT, ProgressStatus.STARTED)
@@ -94,10 +96,12 @@ def transcribe(
                 Stage.VALIDATE_INPUT,
                 f"threads must be >= 1, got {request.threads}",
             )
+        assert_outputs_within_output_dir(request)
         request.output_dir.mkdir(parents=True, exist_ok=True)
         source_fingerprint = _source_fingerprint(audio_path)
         _emit(on_progress, Stage.VALIDATE_INPUT, ProgressStatus.FINISHED)
 
+        active_stage = Stage.CHECK_OUTPUTS
         _emit(on_progress, Stage.CHECK_OUTPUTS, ProgressStatus.STARTED)
         assert_no_output_conflicts(request)
         _emit(on_progress, Stage.CHECK_OUTPUTS, ProgressStatus.FINISHED)
@@ -105,6 +109,7 @@ def transcribe(
         whisper_input = audio_path
         normalized_path: Path | None = None
         if request.normalize:
+            active_stage = Stage.NORMALIZE
             _emit(on_progress, Stage.NORMALIZE, ProgressStatus.STARTED)
             target = normalized_audio_path(request)
             created_paths.append(target)
@@ -119,6 +124,7 @@ def transcribe(
         else:
             logger.info("normalize skipped; using source audio for whisper-cli")
 
+        active_stage = Stage.TRANSCRIBE
         _emit(on_progress, Stage.TRANSCRIBE, ProgressStatus.STARTED)
         base = output_base(request)
         for kind in request.outputs:
@@ -135,11 +141,13 @@ def transcribe(
         )
         _emit(on_progress, Stage.TRANSCRIBE, ProgressStatus.FINISHED)
 
+        active_stage = Stage.VALIDATE_ARTIFACTS
         _emit(on_progress, Stage.VALIDATE_ARTIFACTS, ProgressStatus.STARTED)
         artifacts = validate_requested_artifacts(request)
         _emit(on_progress, Stage.VALIDATE_ARTIFACTS, ProgressStatus.FINISHED)
 
         if request.normalize and not request.keep_normalized and normalized_path is not None:
+            active_stage = Stage.CLEANUP
             _emit(on_progress, Stage.CLEANUP, ProgressStatus.STARTED)
             remove_paths([normalized_path])
             if normalized_path in created_paths:
@@ -172,11 +180,11 @@ def transcribe(
         remove_paths(removable)
         raise
     except Exception as exc:  # pragma: no cover - defensive boundary
-        _emit(on_progress, Stage.VALIDATE_INPUT, ProgressStatus.FAILED, str(exc))
+        _emit(on_progress, active_stage, ProgressStatus.FAILED, str(exc))
         removable = [path for path in created_paths if path.resolve() != audio_path]
         remove_paths(removable)
         raise TranscriptionError(
-            Stage.VALIDATE_INPUT,
+            active_stage,
             f"Unexpected transcription failure: {exc}",
             cause=exc,
         ) from exc

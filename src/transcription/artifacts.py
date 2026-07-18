@@ -7,6 +7,29 @@ from pathlib import Path
 from .types import ArtifactKind, Stage, TranscriptionError, TranscribeRequest
 
 
+def assert_safe_stem(stem: str) -> None:
+    """Reject stems that are not a single relative filename component."""
+    if not stem or stem != stem.strip():
+        raise TranscriptionError(
+            Stage.VALIDATE_INPUT,
+            "stem must be a non-empty filename component without surrounding whitespace",
+        )
+    if "\x00" in stem:
+        raise TranscriptionError(Stage.VALIDATE_INPUT, "stem must not contain NUL bytes")
+
+    path = Path(stem)
+    if path.is_absolute() or bool(path.anchor):
+        raise TranscriptionError(
+            Stage.VALIDATE_INPUT,
+            f"stem must not be an absolute path: {stem!r}",
+        )
+    if len(path.parts) != 1 or path.parts[0] in {".", ".."}:
+        raise TranscriptionError(
+            Stage.VALIDATE_INPUT,
+            f"stem must be a single safe filename component: {stem!r}",
+        )
+
+
 def normalized_audio_path(request: TranscribeRequest) -> Path:
     return request.output_dir / f"{request.stem}_norm16k.wav"
 
@@ -29,6 +52,21 @@ def conflict_candidates(request: TranscribeRequest) -> list[Path]:
         paths.append(normalized_audio_path(request))
     paths.extend(planned_artifact_paths(request).values())
     return paths
+
+
+def assert_outputs_within_output_dir(request: TranscribeRequest) -> None:
+    """Ensure every planned output resolves under ``output_dir``."""
+    assert_safe_stem(request.stem)
+    root = request.output_dir.expanduser().resolve()
+    for path in conflict_candidates(request):
+        resolved = path.expanduser().resolve()
+        try:
+            resolved.relative_to(root)
+        except ValueError as exc:
+            raise TranscriptionError(
+                Stage.VALIDATE_INPUT,
+                f"Planned output escapes output_dir: {path}",
+            ) from exc
 
 
 def assert_no_output_conflicts(request: TranscribeRequest) -> None:

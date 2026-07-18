@@ -66,7 +66,17 @@ def run_whisper(
         outputs=outputs,
     )
     logger.info("transcribe stage starting: %s", output_base)
-    result = runner.run(command)
+    try:
+        result = runner.run(command)
+    except TranscriptionError:
+        raise
+    except Exception as exc:
+        logger.error("whisper-cli failed to start: %s", exc)
+        raise TranscriptionError(
+            Stage.TRANSCRIBE,
+            f"whisper-cli failed to start: {exc}",
+            cause=exc,
+        ) from exc
     if result.returncode != 0:
         logger.error(
             "whisper-cli failed exit=%s stderr=%s",

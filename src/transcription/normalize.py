@@ -33,7 +33,17 @@ def normalize_audio(
         str(output_path),
     ]
     logger.info("normalize stage starting: %s", output_path)
-    result = runner.run(command)
+    try:
+        result = runner.run(command)
+    except TranscriptionError:
+        raise
+    except Exception as exc:
+        logger.error("normalize failed to start: %s", exc)
+        raise TranscriptionError(
+            Stage.NORMALIZE,
+            f"FFmpeg normalization failed to start: {exc}",
+            cause=exc,
+        ) from exc
     if result.returncode != 0:
         logger.error(
             "normalize failed exit=%s stderr=%s",
