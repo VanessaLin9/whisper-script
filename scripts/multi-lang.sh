@@ -78,6 +78,15 @@ for i in "${!SEGMENTS[@]}"; do
 
     echo "[$NUM/$TOTAL] Transcribing: $SEGMENT_NAME"
 
+    # Clear prior outputs for this segment so a failed rerun cannot leave stale
+    # transcripts that look like current results. Keep the input WAV.
+    rm -f \
+        "${OUT_BASE}.txt" \
+        "${OUT_BASE}.srt" \
+        "${OUT_BASE}.vtt" \
+        "${OUT_BASE}.json" \
+        "$SEGMENT_LOG"
+
     set +e
     "$WHISPER_CLI" \
         -m "$MODEL_FILE" \
@@ -97,7 +106,12 @@ for i in "${!SEGMENTS[@]}"; do
         echo "    ✗ Failed (exit ${STATUS})"
         FAILED=$((FAILED + 1))
         echo "$SEGMENT_NAME" >>"$FAILURE_LOG"
-        # Keep failed segment audio for recovery; do not delete "$SEGMENT".
+        # Drop any partial outputs from the failed attempt; keep input audio.
+        rm -f \
+            "${OUT_BASE}.txt" \
+            "${OUT_BASE}.srt" \
+            "${OUT_BASE}.vtt" \
+            "${OUT_BASE}.json"
     fi
 
     echo

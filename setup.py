@@ -7,7 +7,7 @@ _REPO_ROOT = Path(__file__).resolve().parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from env_loader import load_env
+from env_loader import load_env, validate_model_language
 
 # -------- folder helpers --------
 def ensure_dir(p: Path):
@@ -202,7 +202,14 @@ def init_whisper_environment(whisper_root: Path, models: list[str]) -> dict:
     }
 
 # -------- main --------
-def check_environment(whisper_root: Path, models: list[str], directories: list[Path]) -> bool:
+def check_environment(
+    whisper_root: Path,
+    models: list[str],
+    directories: list[Path],
+    *,
+    preferred_model: str,
+    default_language: str,
+) -> bool:
     """Report environment readiness without installing or modifying anything."""
     checks = [
         ("git", which("git")),
@@ -235,6 +242,13 @@ def check_environment(whisper_root: Path, models: list[str], directories: list[P
         else:
             print(f"❌ {label}: not found")
             ready = False
+
+    try:
+        validate_model_language(preferred_model, default_language)
+        print(f"✅ model/language: {preferred_model} + {default_language}")
+    except ValueError as exc:
+        print(f"❌ model/language: {exc}")
+        ready = False
 
     for directory in directories:
         if directory.is_dir():
@@ -299,8 +313,16 @@ def main():
             whisper_root,
             models_to_download,
             [records_dir, transcripts_dir, repo_root / "logs"],
+            preferred_model=preferred,
+            default_language=default_language,
         )
         return 0 if ready else 1
+
+    try:
+        validate_model_language(preferred, default_language)
+    except ValueError as exc:
+        print(f"❌ {exc}")
+        return 1
 
     # Create directories
     ensure_dir(records_dir)

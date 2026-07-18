@@ -40,6 +40,32 @@ assert_file() {
     fi
 }
 
+assert_not_file() {
+    local label="$1"
+    local path="$2"
+    if [ ! -f "$path" ]; then
+        echo "  PASS: ${label}"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: ${label} (unexpected file ${path})"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
+assert_not_contains() {
+    local label="$1"
+    local needle="$2"
+    local haystack="$3"
+    if [[ "$haystack" != *"$needle"* ]]; then
+        echo "  PASS: ${label}"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: ${label}"
+        echo "        unexpectedly found: ${needle}"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
 assert_contains() {
     local label="$1"
     local needle="$2"
@@ -67,13 +93,15 @@ write_env() {
     local whisper_root="$2"
     local records_dir="$3"
     local transcripts_dir="$4"
+    local language="${5:-zh}"
+    local model="${6:-small}"
     cat >"$dest" <<EOF
 WHISPER_ROOT=${whisper_root}
 MEETING_RECORDS_DIR=${records_dir}
 TRANSCRIPTS_DIR=${transcripts_dir}
 MIC_DEVICE=:0
-DEFAULT_LANGUAGE="zh"
-PREFERRED_MODEL="small"
+DEFAULT_LANGUAGE="${language}"
+PREFERRED_MODEL="${model}"
 THREADS=2
 EOF
 }
@@ -108,6 +136,22 @@ load_project_env "${CASE}/.env"
 apply_workflow_defaults
 assert_eq "DEFAULT_LANGUAGE strips quotes" "zh" "$DEFAULT_LANGUAGE"
 assert_eq "PREFERRED_MODEL strips comments/quotes" "small" "$PREFERRED_MODEL"
+
+echo
+echo "== shell: malformed .env fails closed =="
+BAD_ENV="${TMP_ROOT}/bad_env"
+mkdir -p "$BAD_ENV"
+printf 'DEFAULT_LANGUAGE="zh\nPREFERRED_MODEL="small"\n' >"${BAD_ENV}/.env"
+set +e
+out="$(
+  source "${ROOT}/scripts/lib/common.sh"
+  load_project_env "${BAD_ENV}/.env" 2>&1
+)"
+status=$?
+set -e
+assert_eq "malformed .env exits non-zero" "1" "$status"
+assert_contains "malformed .env reports parse failure" "Failed to load environment file" "$out"
+assert_not_contains "malformed .env does not claim success" "Loaded configuration from" "$out"
 
 echo
 echo "== shell: missing .env / whisper-cli / model =="
@@ -151,6 +195,50 @@ set -e
 assert_eq "missing multilingual model exits non-zero" "1" "$status"
 assert_contains "does not accept small.en" "English-only" "$out"
 assert_contains "download hint includes preferred model" "download-ggml-model.sh small" "$out"
+
+echo
+echo "== shell: model/language compatibility =="
+COMPAT="${TMP_ROOT}/compat"
+mkdir -p "$COMPAT"
+make_whisper_root "${COMPAT}/whisper.cpp"
+echo "english-only" >"${COMPAT}/whisper.cpp/models/ggml-small.en.bin"
+
+write_env "${COMPAT}/.env-zh-enmodel" "${COMPAT}/whisper.cpp" "${COMPAT}/records" "${COMPAT}/transcripts" "zh" "small.en"
+set +e
+out="$(
+  source "${ROOT}/scripts/lib/common.sh"
+  load_project_env "${COMPAT}/.env-zh-enmodel"
+  apply_workflow_defaults
+  require_model_language_compatible "$PREFERRED_MODEL" "$DEFAULT_LANGUAGE" 2>&1
+)"
+status=$?
+set -e
+assert_eq "small.en + zh exits non-zero" "1" "$status"
+assert_contains "small.en + zh rejection message" "English-only model" "$out"
+
+write_env "${COMPAT}/.env-en-enmodel" "${COMPAT}/whisper.cpp" "${COMPAT}/records" "${COMPAT}/transcripts" "en" "small.en"
+set +e
+out="$(
+  source "${ROOT}/scripts/lib/common.sh"
+  load_project_env "${COMPAT}/.env-en-enmodel"
+  apply_workflow_defaults
+  require_model_language_compatible "$PREFERRED_MODEL" "$DEFAULT_LANGUAGE" 2>&1
+)"
+status=$?
+set -e
+assert_eq "small.en + en exits zero" "0" "$status"
+
+write_env "${COMPAT}/.env-zh-multi" "${COMPAT}/whisper.cpp" "${COMPAT}/records" "${COMPAT}/transcripts" "zh" "small"
+set +e
+out="$(
+  source "${ROOT}/scripts/lib/common.sh"
+  load_project_env "${COMPAT}/.env-zh-multi"
+  apply_workflow_defaults
+  require_model_language_compatible "$PREFERRED_MODEL" "$DEFAULT_LANGUAGE" 2>&1
+)"
+status=$?
+set -e
+assert_eq "small + zh exits zero" "0" "$status"
 
 echo
 echo "== multi-lang.sh: all segments succeed =="
@@ -212,6 +300,31 @@ else
     FAIL=$((FAIL + 1))
 fi
 assert_contains "summary reports failed count" "Failed: 1" "$out"
+
+echo
+echo "== multi-lang.sh: rerun clears stale segment outputs on failure =="
+STALE="${TMP_ROOT}/batch_stale"
+mkdir -p "${STALE}/segments/transcripts"
+make_whisper_root "${STALE}/whisper.cpp"
+clone_project "${STALE}/project"
+write_env "${STALE}/project/.env" "${STALE}/whisper.cpp" "${STALE}/records" "${STALE}/transcripts"
+printf 'a' >"${STALE}/segments/segment_001.wav"
+echo "old successful transcript" >"${STALE}/segments/transcripts/segment_001.txt"
+echo "old srt" >"${STALE}/segments/transcripts/segment_001.srt"
+
+set +e
+out="$(
+  PATH="${FAKE_BIN}:${PATH}" \
+  FAIL_SEGMENTS="segment_001.wav" \
+  "${STALE}/project/scripts/multi-lang.sh" "${STALE}/segments" 2>&1
+)"
+status=$?
+set -e
+assert_eq "stale rerun exits non-zero" "1" "$status"
+assert_file "keeps failed segment audio on rerun" "${STALE}/segments/segment_001.wav"
+assert_not_file "removes stale txt after failed rerun" "${STALE}/segments/transcripts/segment_001.txt"
+assert_not_file "removes stale srt after failed rerun" "${STALE}/segments/transcripts/segment_001.srt"
+assert_file "writes failure log for failed rerun" "${STALE}/segments/failed_segments.log"
 
 echo
 echo "== record-meeting.sh: ffmpeg failure does not start whisper =="

@@ -63,15 +63,45 @@ def dump_env_for_shell(env: dict[str, str]) -> None:
         out.write(b"\0")
 
 
+def is_english_only_model(model_name: str) -> bool:
+    """Return True for whisper.cpp English-only model names such as small.en."""
+    return model_name.endswith(".en")
+
+
+def validate_model_language(model_name: str, language: str) -> None:
+    """Reject English-only models for non-English language settings."""
+    normalized_language = language.strip().lower()
+    if is_english_only_model(model_name) and normalized_language != "en":
+        raise ValueError(
+            f"English-only model '{model_name}' cannot be used with "
+            f"DEFAULT_LANGUAGE={language}. "
+            "Use a multilingual model (e.g. 'small') or set DEFAULT_LANGUAGE=en."
+        )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Load project .env values safely")
-    parser.add_argument("env_file", type=Path, help="Path to the .env file")
+    parser.add_argument("env_file", type=Path, nargs="?", help="Path to the .env file")
     parser.add_argument(
         "--dump-shell",
         action="store_true",
         help="Emit NUL-delimited KEY/VALUE pairs for shell import",
     )
+    parser.add_argument(
+        "--validate-model-language",
+        nargs=2,
+        metavar=("MODEL", "LANGUAGE"),
+        help="Validate PREFERRED_MODEL against DEFAULT_LANGUAGE and exit",
+    )
     args = parser.parse_args(argv)
+
+    if args.validate_model_language is not None:
+        model_name, language = args.validate_model_language
+        validate_model_language(model_name, language)
+        return 0
+
+    if args.env_file is None:
+        parser.error("env_file is required unless --validate-model-language is used")
 
     env = load_env(args.env_file)
     if args.dump_shell:

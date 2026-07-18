@@ -19,11 +19,20 @@ load_project_env() {
         exit 1
     fi
 
+    local dump_file
+    dump_file="$(mktemp "${TMPDIR:-/tmp}/whisper-env.XXXXXX")"
+    if ! python3 "${REPO_ROOT}/env_loader.py" "$env_file" --dump-shell >"$dump_file"; then
+        rm -f "$dump_file"
+        echo "[!] Failed to load environment file: $env_file"
+        exit 1
+    fi
+
     local key value
     while IFS= read -r -d '' key && IFS= read -r -d '' value; do
         printf -v "$key" '%s' "$value"
         export "$key"
-    done < <(python3 "${REPO_ROOT}/env_loader.py" "$env_file" --dump-shell)
+    done <"$dump_file"
+    rm -f "$dump_file"
 
     echo "[*] Loaded configuration from: $env_file"
 }
@@ -83,6 +92,18 @@ require_whisper_cli() {
     fi
 }
 
+require_model_language_compatible() {
+    local model_name="$1"
+    local language="$2"
+
+    if ! python3 "${REPO_ROOT}/env_loader.py" \
+        --validate-model-language "$model_name" "$language"; then
+        echo "[!] Invalid model/language combination."
+        echo "    English-only models (*.en) are only allowed when DEFAULT_LANGUAGE=en."
+        exit 1
+    fi
+}
+
 require_configured_model() {
     local whisper_root="$1"
     local model_name="$2"
@@ -104,6 +125,7 @@ resolve_workflow_paths() {
     require_var WHISPER_ROOT
     apply_workflow_defaults
     detect_threads
+    require_model_language_compatible "$PREFERRED_MODEL" "$DEFAULT_LANGUAGE"
     require_whisper_cli "$WHISPER_ROOT"
     require_configured_model "$WHISPER_ROOT" "$PREFERRED_MODEL"
 

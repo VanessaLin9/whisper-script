@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from env_loader import expand_documented_vars, load_env
+from env_loader import expand_documented_vars, load_env, validate_model_language
 
 
 class EnvLoaderTests(unittest.TestCase):
@@ -89,6 +89,26 @@ class EnvLoaderTests(unittest.TestCase):
             self.assertEqual(env["MIC_DEVICE"], ":0")
             self.assertTrue(env["MEETING_RECORDS_DIR"].endswith("/MeetingRecords"))
             self.assertNotIn("$(", expand_documented_vars("$HOME/ok"))
+
+    def test_malformed_quoted_value_raises(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            env_path = Path(tmp) / ".env"
+            env_path.write_text('DEFAULT_LANGUAGE="zh\n', encoding="utf-8")
+
+            with self.assertRaises(ValueError) as ctx:
+                load_env(env_path)
+
+            self.assertIn("DEFAULT_LANGUAGE", str(ctx.exception))
+
+    def test_reject_english_only_model_for_chinese(self) -> None:
+        with self.assertRaises(ValueError):
+            validate_model_language("small.en", "zh")
+
+    def test_allow_english_only_model_for_english(self) -> None:
+        validate_model_language("small.en", "en")
+
+    def test_allow_multilingual_model_for_chinese(self) -> None:
+        validate_model_language("small", "zh")
 
 
 if __name__ == "__main__":
