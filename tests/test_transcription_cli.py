@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
+from src.output_manager import DEFAULT_ARTIFACTS, default_outputs_arg
 from src.transcription import ArtifactKind, Stage, TranscriptionError, TranscribeResult
 from src.transcription.cli import build_parser, main, request_from_args
 
@@ -45,6 +46,33 @@ class TranscriptionCliTests(unittest.TestCase):
         self.assertEqual(request.outputs, frozenset({ArtifactKind.TXT, ArtifactKind.SRT}))
         self.assertTrue(request.normalize)
         self.assertTrue(request.keep_normalized)
+
+    def test_parser_default_outputs_match_shared_policy(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--audio",
+                "/tmp/a.wav",
+                "--output-dir",
+                "/tmp/out",
+                "--stem",
+                "meeting",
+                "--language",
+                "zh",
+                "--model",
+                "small",
+                "--model-path",
+                "/tmp/model.bin",
+                "--whisper-cli",
+                "/tmp/whisper-cli",
+                "--threads",
+                "4",
+            ]
+        )
+        request = request_from_args(args)
+        self.assertEqual(default_outputs_arg(), "json,srt,txt")
+        self.assertEqual(request.outputs, DEFAULT_ARTIFACTS)
+        self.assertNotIn(ArtifactKind.VTT, request.outputs)
 
     def test_main_reports_stage_on_failure(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -3,8 +3,8 @@
 # Filename is historical; language/model come from .env (default: zh / small).
 # Outputs are organized into a per-meeting folder under MEETING_RECORDS_DIR.
 #
-# Interactive UX stays in this shell. Normalize / whisper-cli / artifact checks
-# are delegated to the reusable Python transcription core.
+# Interactive UX stays in this shell. Workspace ownership / artifact defaults
+# come from Output Manager; normalize / whisper-cli run via the transcription core.
 
 set -euo pipefail
 
@@ -17,12 +17,18 @@ resolve_workflow_paths
 
 mkdir -p "$MEETING_RECORDS_DIR"
 
+DEFAULT_OUTPUTS="$(
+  PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 -c 'from src.output_manager import default_outputs_arg; print(default_outputs_arg())'
+)"
+
 echo "[*] Configuration summary:"
 echo "    Whisper root: $WHISPER_ROOT"
 echo "    Meeting records dir: $MEETING_RECORDS_DIR"
 echo "    Preferred model: $PREFERRED_MODEL"
 echo "    Language: $DEFAULT_LANGUAGE"
 echo "    Threads: $THREADS"
+echo "    Default outputs: $DEFAULT_OUTPUTS"
 echo
 echo "[*] Using model: $(basename "$MODEL_FILE")"
 
@@ -41,8 +47,7 @@ fi
 ORIGINAL_IN="$IN"
 echo "[*] Input file: $ORIGINAL_IN"
 
-# Organize into a per-meeting folder before transcription. The original input
-# file is preserved; the helper copies a timestamped version into the folder.
+# Plan/create meeting workspace. Local sources are referenced in place (no copy).
 ORGANIZER="$SCRIPT_DIR/organize_recording.py"
 if [ ! -f "$ORGANIZER" ]; then
     echo "[!] Recording organizer not found: $ORGANIZER"
@@ -50,7 +55,10 @@ if [ ! -f "$ORGANIZER" ]; then
 fi
 
 set +e
-ORGANIZED_JSON="$(python3 "$ORGANIZER" "$ORIGINAL_IN" --records-dir "$MEETING_RECORDS_DIR")"
+ORGANIZED_JSON="$(
+  PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
+    python3 "$ORGANIZER" "$ORIGINAL_IN" --records-dir "$MEETING_RECORDS_DIR"
+)"
 ORGANIZER_STATUS=$?
 set -e
 if [ "$ORGANIZER_STATUS" -ne 0 ] || [ -z "$ORGANIZED_JSON" ]; then
@@ -65,7 +73,7 @@ IN="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["audio_file"])' <<
 stem="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["stem"])' <<< "$ORGANIZED_JSON")"
 
 echo "[*] Meeting folder: $MEETING_DIR"
-echo "[*] Standard audio: $IN"
+echo "[*] Source audio (referenced): $IN"
 
 if command -v ffprobe >/dev/null 2>&1; then
     echo "[*] Probing duration with ffprobe..."
@@ -88,7 +96,7 @@ PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m src.transcriptio
     --model-path "$MODEL_FILE" \
     --whisper-cli "$WHISPER_CLI" \
     --threads "$THREADS" \
-    --outputs txt,srt,vtt,json \
+    --outputs "$DEFAULT_OUTPUTS" \
     --normalize \
     --keep-normalized \
     --ffmpeg ffmpeg
@@ -114,14 +122,13 @@ echo "[✓] Transcription completed successfully!"
 echo
 echo "=== Input ==="
 echo "Original audio : $ORIGINAL_IN"
-echo "Meeting audio  : $IN"
+echo "Referenced audio: $IN"
 echo "Normalized     : $NORM"
 echo
 echo "=== Output Files ==="
 echo "Meeting folder : $MEETING_DIR"
 echo "Text transcript: ${OUT_BASE}.txt"
 echo "SRT subtitles  : ${OUT_BASE}.srt"
-echo "VTT subtitles  : ${OUT_BASE}.vtt"
 echo "JSON data      : ${OUT_BASE}.json"
 echo "Config used    : ${REPO_ROOT}/.env"
 

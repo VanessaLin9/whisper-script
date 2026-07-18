@@ -40,6 +40,18 @@ assert_file() {
     fi
 }
 
+assert_not_file() {
+    local label="$1"
+    local path="$2"
+    if [ ! -f "$path" ]; then
+        echo "  PASS: ${label}"
+        PASS=$((PASS + 1))
+    else
+        echo "  FAIL: ${label} (unexpected ${path})"
+        FAIL=$((FAIL + 1))
+    fi
+}
+
 assert_contains() {
     local label="$1"
     local needle="$2"
@@ -78,21 +90,28 @@ EOF
 
 clone_project() {
     local dest="$1"
-    mkdir -p "${dest}/scripts/lib" "${dest}/src/transcription"
+    mkdir -p "${dest}/scripts/lib" "${dest}/src/transcription" "${dest}/src/output_manager"
     cp "${ROOT}/env_loader.py" "${dest}/"
     cp "${ROOT}/scripts/lib/common.sh" "${dest}/scripts/lib/"
     cp "${ROOT}/scripts/organize_recording.py" "${dest}/scripts/"
     cp "${ROOT}/scripts/transcribe-english.sh" "${dest}/scripts/"
     cp "${ROOT}/src/transcription/"*.py "${dest}/src/transcription/"
+    cp "${ROOT}/src/output_manager/"*.py "${dest}/src/output_manager/"
     chmod +x "${dest}/scripts/"*.sh "${dest}/scripts/lib/common.sh"
 }
 
 # Use a standard timestamp prefix so organize_recording.py does not prompt.
 SOURCE_NAME="2026-07-17_1500_demo.wav"
+STEM="2026-07-17_1500_demo"
+MEETING_DIR_NAME="2026-07-17_1500_2026-07-17_1500_demo"
 
 export PATH="${FAKE_BIN}:${PATH}"
 hash -r
 cd "$ROOT"
+
+run_transcribe() {
+  PATH="${FAKE_BIN}:${PATH}" "$@" 2>&1
+}
 
 echo "== transcribe-english.sh: success path via core =="
 OK="${TMP_ROOT}/ok"
@@ -101,11 +120,6 @@ make_whisper_root "${OK}/whisper.cpp"
 clone_project "${OK}/project"
 write_env "${OK}/project/.env" "${OK}/whisper.cpp" "${OK}/records"
 printf 'audio' >"${OK}/inbox/${SOURCE_NAME}"
-
-run_transcribe() {
-  # Captures stdout+stderr; UI helpers are stubbed via FAKE_BIN.
-  PATH="${FAKE_BIN}:${PATH}" "$@" 2>&1
-}
 
 set +e
 out="$(
@@ -116,15 +130,16 @@ EOF
 status=$?
 set -e
 
+meeting_dir="${OK}/records/${MEETING_DIR_NAME}"
 assert_eq "success exit status" "0" "$status"
 assert_contains "success message" "Transcription completed successfully" "$out"
-meeting_dir="${OK}/records/2026-07-17_1500"
-assert_file "keeps organized source copy" "${meeting_dir}/${SOURCE_NAME}"
-assert_file "normalized wav" "${meeting_dir}/2026-07-17_1500_demo_norm16k.wav"
-assert_file "txt artifact" "${meeting_dir}/2026-07-17_1500_demo_transcription.txt"
-assert_file "srt artifact" "${meeting_dir}/2026-07-17_1500_demo_transcription.srt"
-assert_file "vtt artifact" "${meeting_dir}/2026-07-17_1500_demo_transcription.vtt"
-assert_file "json artifact" "${meeting_dir}/2026-07-17_1500_demo_transcription.json"
+assert_file "source meta written" "${meeting_dir}/source_meta.json"
+assert_not_file "does not copy local audio into workspace" "${meeting_dir}/${SOURCE_NAME}"
+assert_file "normalized wav" "${meeting_dir}/${STEM}_norm16k.wav"
+assert_file "txt artifact" "${meeting_dir}/${STEM}_transcription.txt"
+assert_file "srt artifact" "${meeting_dir}/${STEM}_transcription.srt"
+assert_file "json artifact" "${meeting_dir}/${STEM}_transcription.json"
+assert_not_file "vtt not produced by default" "${meeting_dir}/${STEM}_transcription.vtt"
 assert_file "original inbox file preserved" "${OK}/inbox/${SOURCE_NAME}"
 assert_contains "delegates to python core" "src.transcription.cli" "$(grep -n 'src.transcription.cli' "${OK}/project/scripts/transcribe-english.sh" || true)"
 if ! grep -q 'ffmpeg -y -i' "${OK}/project/scripts/transcribe-english.sh"; then
@@ -134,7 +149,6 @@ else
     echo "  FAIL: shell still contains direct ffmpeg normalize"
     FAIL=$((FAIL + 1))
 fi
-# Shell may pass --whisper-cli / $WHISPER_CLI into the core, but must not exec it.
 if ! grep -E '^[[:space:]]*"?\$\{?WHISPER_CLI\}?"?' "${OK}/project/scripts/transcribe-english.sh" >/dev/null; then
     echo "  PASS: shell does not exec whisper-cli directly"
     PASS=$((PASS + 1))
@@ -146,27 +160,25 @@ fi
 echo
 echo "== transcribe-english.sh: output conflict =="
 CONFLICT="${TMP_ROOT}/conflict"
-# Feed an already-organized path so unique_destination keeps the same stem,
-# then seed a stale transcript that the core must refuse to overwrite.
-mkdir -p "${CONFLICT}/records/2026-07-17_1500"
+mkdir -p "${CONFLICT}/inbox" "${CONFLICT}/records/${MEETING_DIR_NAME}"
 make_whisper_root "${CONFLICT}/whisper.cpp"
 clone_project "${CONFLICT}/project"
 write_env "${CONFLICT}/project/.env" "${CONFLICT}/whisper.cpp" "${CONFLICT}/records"
-printf 'audio' >"${CONFLICT}/records/2026-07-17_1500/${SOURCE_NAME}"
-echo "old" >"${CONFLICT}/records/2026-07-17_1500/2026-07-17_1500_demo_transcription.txt"
+printf 'audio' >"${CONFLICT}/inbox/${SOURCE_NAME}"
+echo "old" >"${CONFLICT}/records/${MEETING_DIR_NAME}/${STEM}_transcription.txt"
 
 set +e
 out="$(
   run_transcribe "${CONFLICT}/project/scripts/transcribe-english.sh" <<EOF
-${CONFLICT}/records/2026-07-17_1500/${SOURCE_NAME}
+${CONFLICT}/inbox/${SOURCE_NAME}
 EOF
 )"
 status=$?
 set -e
 assert_eq "conflict exit status" "1" "$status"
-assert_contains "conflict reports stage" "stage=check_outputs" "$out"
-assert_eq "stale transcript unchanged" "old" "$(cat "${CONFLICT}/records/2026-07-17_1500/2026-07-17_1500_demo_transcription.txt")"
-assert_file "source preserved on conflict" "${CONFLICT}/records/2026-07-17_1500/${SOURCE_NAME}"
+assert_contains "conflict refused" "refusing to overwrite" "$out"
+assert_eq "stale transcript unchanged" "old" "$(cat "${CONFLICT}/records/${MEETING_DIR_NAME}/${STEM}_transcription.txt")"
+assert_file "source preserved on conflict" "${CONFLICT}/inbox/${SOURCE_NAME}"
 
 echo
 echo "== transcribe-english.sh: normalize failure =="
@@ -209,7 +221,7 @@ set -e
 assert_eq "whisper failure exit status" "1" "$status"
 assert_contains "whisper failure stage" "stage=transcribe" "$out"
 assert_file "source preserved on whisper failure" "${WHISPER_FAIL}/inbox/${SOURCE_NAME}"
-if [ ! -f "${WHISPER_FAIL}/records/2026-07-17_1500/2026-07-17_1500_demo_transcription.txt" ]; then
+if [ ! -f "${WHISPER_FAIL}/records/${MEETING_DIR_NAME}/${STEM}_transcription.txt" ]; then
     echo "  PASS: no success transcript left after whisper failure"
     PASS=$((PASS + 1))
 else

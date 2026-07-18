@@ -10,6 +10,8 @@ import argparse
 import sys
 from pathlib import Path
 
+from src.output_manager import default_outputs_arg
+
 from .core import transcribe
 from .types import (
     ArtifactKind,
@@ -52,9 +54,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--threads", required=True, type=int)
     parser.add_argument(
         "--outputs",
-        default="txt,srt,vtt,json",
+        default=default_outputs_arg(),
         type=_parse_outputs,
-        help="Comma-separated artifacts: txt,srt,vtt,json",
+        help="Comma-separated artifacts: txt,srt,vtt,json (default: txt,srt,json)",
     )
     parser.add_argument("--ffmpeg", type=Path, default=Path("ffmpeg"))
     parser.add_argument(
