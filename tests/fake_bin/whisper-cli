@@ -20,6 +20,10 @@ if [ -z "$input" ] || [ -z "$output_base" ]; then
 fi
 
 base_name="$(basename "$input")"
+if [ "${FAIL_WHISPER:-0}" = "1" ]; then
+    echo "simulated whisper-cli failure" >&2
+    exit 1
+fi
 if [ -n "${FAIL_SEGMENTS:-}" ]; then
     case " ${FAIL_SEGMENTS} " in
         *" ${base_name} "*|*" ${base_name%.wav} "*)

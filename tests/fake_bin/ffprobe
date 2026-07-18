@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Deterministic ffprobe stub for offline tests.
+set -euo pipefail
+# Duration probe used by transcribe-english.sh
+if [[ "$*" == *format=duration* ]]; then
+    echo "12.345"
+    exit 0
+fi
+# Metadata probe used by organize_recording.py
+if [[ "$*" == *creation_time* ]]; then
+    echo '{"format":{"tags":{}}}'
+    exit 0
+fi
+echo '{}'
+exit 0

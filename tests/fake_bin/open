@@ -1,0 +1,4 @@
+#!/usr/bin/env bash
+# No-op Finder/open stub for offline tests.
+set -euo pipefail
+exit 0

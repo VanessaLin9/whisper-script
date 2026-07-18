@@ -1,4 +1,6 @@
 import importlib.util
+import io
+import json
 import sys
 import tempfile
 import unittest
@@ -47,6 +49,37 @@ class OrganizeRecordingTests(unittest.TestCase):
             result = MODULE.prepare_recording(source, root / "records", assume_yes=True)
             self.assertEqual(Path(result["audio_file"]).name, source.name)
 
+    def test_time_prompt_keeps_stdout_json_clean(self):
+        """Shell captures organizer stdout as JSON; prompts must stay on stderr."""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "市民大道八段544–590號.m4a"
+            source.write_bytes(b"audio")
+            detected = MODULE.RecordingTime(
+                datetime(2026, 7, 18, 22, 38), "audio metadata", False
+            )
+            stdout = io.StringIO()
+            stderr = io.StringIO()
+            with patch.object(MODULE, "detect_recording_time", return_value=detected):
+                with patch.object(MODULE.sys, "stdin", io.StringIO("\n")):
+                    with patch.object(MODULE.sys, "stdout", stdout):
+                        with patch.object(MODULE.sys, "stderr", stderr):
+                            result = MODULE.prepare_recording(
+                                source, root / "records", assume_yes=False
+                            )
+                            MODULE.sys.stdout.write(
+                                json.dumps(result, ensure_ascii=False) + "\n"
+                            )
+
+            payload = stdout.getvalue()
+            parsed = json.loads(payload)
+            self.assertIn("meeting_dir", parsed)
+            self.assertIn("市民大道八段544–590號.m4a", parsed["audio_file"])
+            self.assertIn("Press Enter to accept", stderr.getvalue())
+            self.assertNotIn("Press Enter", payload)
+            self.assertEqual(stdout.getvalue().count("\n"), 1)
+
 
 if __name__ == "__main__":
     unittest.main()
+

@@ -2,6 +2,9 @@
 # Transcribe an existing audio file with the configured multilingual model.
 # Filename is historical; language/model come from .env (default: zh / small).
 # Outputs are organized into a per-meeting folder under MEETING_RECORDS_DIR.
+#
+# Interactive UX stays in this shell. Normalize / whisper-cli / artifact checks
+# are delegated to the reusable Python transcription core.
 
 set -euo pipefail
 
@@ -46,8 +49,18 @@ if [ ! -f "$ORGANIZER" ]; then
     exit 1
 fi
 
+set +e
 ORGANIZED_JSON="$(python3 "$ORGANIZER" "$ORIGINAL_IN" --records-dir "$MEETING_RECORDS_DIR")"
-MEETING_DIR="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["meeting_dir"])' <<< "$ORGANIZED_JSON")"
+ORGANIZER_STATUS=$?
+set -e
+if [ "$ORGANIZER_STATUS" -ne 0 ] || [ -z "$ORGANIZED_JSON" ]; then
+    echo "[!] Failed to organize recording into a meeting folder."
+    exit 1
+fi
+if ! MEETING_DIR="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["meeting_dir"])' <<< "$ORGANIZED_JSON")"; then
+    echo "[!] Organizer returned invalid JSON."
+    exit 1
+fi
 IN="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["audio_file"])' <<< "$ORGANIZED_JSON")"
 stem="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["stem"])' <<< "$ORGANIZED_JSON")"
 
@@ -62,27 +75,30 @@ fi
 NORM="${MEETING_DIR}/${stem}_norm16k.wav"
 OUT_BASE="${MEETING_DIR}/${stem}_transcription"
 
-# Refuse to overwrite existing artifacts before ffmpeg uses -y.
-for output in "$NORM" "${OUT_BASE}.txt" "${OUT_BASE}.srt" "${OUT_BASE}.vtt" "${OUT_BASE}.json"; do
-    if [ -e "$output" ]; then
-        echo "[!] Output already exists; refusing to overwrite: $output"
-        exit 1
-    fi
-done
-
-echo "[*] Normalizing audio to 16kHz mono WAV -> $NORM"
-ffmpeg -y -i "$IN" -ac 1 -ar 16000 -c:a pcm_s16le "$NORM"
-
 echo "[*] Starting transcription with $(basename "$MODEL_FILE")..."
 echo "    This may take a while for long recordings..."
 
-"$WHISPER_CLI" \
-    -m "$MODEL_FILE" \
-    -f "$NORM" \
+set +e
+PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m src.transcription.cli \
+    --audio "$IN" \
+    --output-dir "$MEETING_DIR" \
+    --stem "$stem" \
     --language "$DEFAULT_LANGUAGE" \
+    --model "$PREFERRED_MODEL" \
+    --model-path "$MODEL_FILE" \
+    --whisper-cli "$WHISPER_CLI" \
     --threads "$THREADS" \
-    --output-txt --output-srt --output-vtt --output-json \
-    --output-file "$OUT_BASE"
+    --outputs txt,srt,vtt,json \
+    --normalize \
+    --keep-normalized \
+    --ffmpeg ffmpeg
+STATUS=$?
+set -e
+
+if [ "$STATUS" -ne 0 ]; then
+    echo "[!] Transcription failed (see stage details above)."
+    exit "$STATUS"
+fi
 
 TXT="${OUT_BASE}.txt"
 
