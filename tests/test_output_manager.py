@@ -131,8 +131,10 @@ class ManagedSourceTests(unittest.TestCase):
                 )
             )
             self.assertNotEqual(workspace.audio_path.resolve(), downloaded.resolve())
+            meta = json.loads(workspace.metadata_path.read_text(encoding="utf-8"))
+            self.assertTrue(meta["retained_in_workspace"])
 
-    def test_managed_persist_failure_does_not_start_looking_successful(self) -> None:
+    def test_partial_managed_copy_failure_leaves_no_destination(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             downloaded = root / "tmp-download.m4a"
@@ -142,18 +144,56 @@ class ManagedSourceTests(unittest.TestCase):
                 SourceDescriptor(SourceKind.MANAGED_DOWNLOAD, downloaded),
                 datetime(2026, 7, 17, 15, 0),
             )
-            with patch("src.output_manager.workspace.shutil.copy2", side_effect=OSError("boom")):
+
+            def partial_copy(src: Path, dst: Path) -> None:
+                Path(dst).write_bytes(b"partial")
+                raise OSError("disk full")
+
+            with patch(
+                "src.output_manager.workspace.shutil.copy2",
+                side_effect=partial_copy,
+            ):
                 with self.assertRaises(WorkspaceError) as ctx:
                     create_workspace(plan)
             self.assertEqual(ctx.exception.stage, WorkspaceStage.PERSIST_SOURCE)
+            self.assertEqual(downloaded.read_bytes(), b"drive-bytes")
             self.assertFalse(plan.metadata_path.exists())
-            if plan.managed_audio_path is not None:
-                self.assertFalse(plan.managed_audio_path.exists())
+            assert plan.managed_audio_path is not None
+            self.assertFalse(plan.managed_audio_path.exists())
+            leftovers = list(plan.workspace_dir.glob(".*.tmp-*"))
+            self.assertEqual(leftovers, [])
 
-    def test_managed_recording_policy_does_not_plan_second_copy(self) -> None:
+    def test_partial_metadata_failure_removes_managed_audio(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            recorded = root / "records" / "meeting.wav"
+            downloaded = root / "tmp-download.m4a"
+            downloaded.write_bytes(b"drive-bytes")
+            plan = plan_workspace(
+                root / "records",
+                SourceDescriptor(SourceKind.MANAGED_DOWNLOAD, downloaded),
+                datetime(2026, 7, 17, 15, 0),
+            )
+
+            def partial_metadata(path: Path, text: str) -> None:
+                path.write_text("{partial", encoding="utf-8")
+                raise OSError("disk full")
+
+            with patch(
+                "src.output_manager.workspace.atomic_write_text",
+                side_effect=partial_metadata,
+            ):
+                with self.assertRaises(WorkspaceError) as ctx:
+                    create_workspace(plan)
+            self.assertEqual(ctx.exception.stage, WorkspaceStage.WRITE_METADATA)
+            self.assertEqual(downloaded.read_bytes(), b"drive-bytes")
+            self.assertFalse(plan.metadata_path.exists())
+            assert plan.managed_audio_path is not None
+            self.assertFalse(plan.managed_audio_path.exists())
+
+    def test_managed_recording_outside_workspace_not_marked_retained(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            recorded = root / "outside" / "meeting.wav"
             recorded.parent.mkdir(parents=True)
             recorded.write_bytes(b"rec")
             plan = plan_workspace(
@@ -163,6 +203,35 @@ class ManagedSourceTests(unittest.TestCase):
             )
             self.assertIsNone(plan.managed_audio_path)
             self.assertEqual(plan.audio_path_for_core, recorded)
+            workspace = create_workspace(plan)
+            meta = json.loads(workspace.metadata_path.read_text(encoding="utf-8"))
+            self.assertFalse(meta["retained_in_workspace"])
+            self.assertEqual(recorded.read_bytes(), b"rec")
+
+    def test_managed_recording_inside_workspace_is_marked_retained(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            plan = plan_workspace(
+                root / "records",
+                SourceDescriptor(
+                    SourceKind.MANAGED_RECORDING,
+                    root / "placeholder.wav",
+                    original_name="meeting.wav",
+                ),
+                datetime(2026, 7, 17, 15, 0),
+            )
+            recorded = plan.workspace_dir / "meeting.wav"
+            recorded.parent.mkdir(parents=True)
+            recorded.write_bytes(b"rec")
+            plan = plan_workspace(
+                root / "records",
+                SourceDescriptor(SourceKind.MANAGED_RECORDING, recorded),
+                datetime(2026, 7, 17, 15, 0),
+            )
+            workspace = create_workspace(plan)
+            meta = json.loads(workspace.metadata_path.read_text(encoding="utf-8"))
+            self.assertTrue(meta["retained_in_workspace"])
+            self.assertEqual(workspace.audio_path.resolve(), recorded.resolve())
 
 
 class ArtifactAndConflictTests(unittest.TestCase):

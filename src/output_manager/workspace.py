@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -32,6 +33,19 @@ def _display_name(source: SourceDescriptor) -> str:
     if source.original_name:
         return source.original_name
     return source.path.name
+
+
+def _is_within(path: Path, root: Path) -> bool:
+    try:
+        path.expanduser().resolve().relative_to(root.expanduser().resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def retained_in_workspace(workspace_dir: Path, audio_path: Path) -> bool:
+    """True only when the core audio path actually lives under the workspace."""
+    return _is_within(audio_path, workspace_dir)
 
 
 def plan_workspace(
@@ -134,6 +148,41 @@ def assert_no_plan_conflicts(plan: WorkspacePlan) -> None:
         )
 
 
+def _temp_sibling(path: Path) -> Path:
+    return path.with_name(f".{path.name}.tmp-{os.getpid()}")
+
+
+def _cleanup_path(path: Path | None) -> None:
+    if path is None:
+        return
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def atomic_write_text(path: Path, text: str) -> None:
+    """Write ``path`` via a same-directory temp file and ``os.replace``."""
+    tmp = _temp_sibling(path)
+    try:
+        tmp.write_text(text, encoding="utf-8")
+        os.replace(tmp, path)
+    except Exception:
+        _cleanup_path(tmp)
+        raise
+
+
+def atomic_copy_file(source: Path, destination: Path) -> None:
+    """Copy ``source`` to ``destination`` atomically (temp + replace)."""
+    tmp = _temp_sibling(destination)
+    try:
+        shutil.copy2(source, tmp)
+        os.replace(tmp, destination)
+    except Exception:
+        _cleanup_path(tmp)
+        raise
+
+
 def _write_metadata(plan: WorkspacePlan, audio_path: Path) -> None:
     payload = {
         "source_kind": plan.source.kind.value,
@@ -143,12 +192,12 @@ def _write_metadata(plan: WorkspacePlan, audio_path: Path) -> None:
         "safe_stem": plan.safe_stem,
         "outputs": sorted(kind.value for kind in plan.outputs),
         "normalize": plan.normalize,
-        "retained_in_workspace": plan.source.kind != SourceKind.LOCAL_REFERENCE,
+        "retained_in_workspace": retained_in_workspace(plan.workspace_dir, audio_path),
     }
     try:
-        plan.metadata_path.write_text(
+        atomic_write_text(
+            plan.metadata_path,
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
         )
     except OSError as exc:
         raise WorkspaceError(
@@ -162,7 +211,7 @@ def _persist_managed_download(plan: WorkspacePlan, source_path: Path) -> Path:
     assert plan.managed_audio_path is not None
     destination = plan.managed_audio_path
     try:
-        shutil.copy2(source_path, destination)
+        atomic_copy_file(source_path, destination)
     except OSError as exc:
         raise WorkspaceError(
             WorkspaceStage.PERSIST_SOURCE,
@@ -216,25 +265,26 @@ def create_workspace(plan: WorkspacePlan) -> MeetingWorkspace:
     assert_no_plan_conflicts(plan)
 
     audio_path = plan.audio_path_for_core
-    created_managed: Path | None = None
+    created_paths: list[Path] = []
     try:
         if plan.source.kind == SourceKind.MANAGED_DOWNLOAD:
-            created_managed = _persist_managed_download(plan, source_path)
-            audio_path = created_managed
+            audio_path = _persist_managed_download(plan, source_path)
+            created_paths.append(audio_path)
         elif plan.source.kind == SourceKind.MANAGED_RECORDING:
             audio_path = source_path
         else:
             audio_path = source_path
 
         _write_metadata(plan, audio_path)
+        created_paths.append(plan.metadata_path)
     except WorkspaceError:
-        if created_managed is not None:
-            try:
-                created_managed.unlink(missing_ok=True)
-            except OSError:
-                pass
-        # Do not delete workspace_dir wholesale if it may contain unrelated files;
-        # only remove metadata we just failed to finish when absent.
+        for path in reversed(created_paths):
+            _cleanup_path(path)
+        # Always clear destinations this invocation may have partially written,
+        # even if they were never recorded in created_paths.
+        _cleanup_path(plan.metadata_path)
+        if plan.managed_audio_path is not None:
+            _cleanup_path(plan.managed_audio_path)
         raise
 
     return MeetingWorkspace(

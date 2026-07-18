@@ -25,6 +25,7 @@ from .workspace import (
     create_workspace,
     plan_workspace,
     prepare_local_workspace,
+    retained_in_workspace,
 )
 
 __all__ = [
@@ -43,4 +44,5 @@ __all__ = [
     "plan_workspace",
     "prepare_local_workspace",
     "resolve_outputs",
+    "retained_in_workspace",
 ]
