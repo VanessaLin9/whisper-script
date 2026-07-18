@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# Deterministic ffmpeg stub for offline tests.
+set -euo pipefail
+
+if [ "${FAIL_FFMPEG:-0}" = "1" ]; then
+    echo "fake ffmpeg failure" >&2
+    exit 1
+fi
+
+output=""
+prev=""
+for arg in "$@"; do
+    case "$prev" in
+        -i)
+            ;;
+        *)
+            ;;
+    esac
+    if [[ "$arg" != -* ]]; then
+        output="$arg"
+    fi
+    prev="$arg"
+done
+
+# avfoundation device listing used by record-meeting.sh
+if [[ "$*" == *list_devices* ]]; then
+    echo "[AVFoundation input device (audio)]" >&2
+    echo "[0] Fake Mic" >&2
+    exit 0
+fi
+
+if [ -n "$output" ]; then
+    mkdir -p "$(dirname "$output")"
+    if [ "${FFMPEG_SLEEP_FOREVER:-0}" = "1" ]; then
+        # Simulate an in-progress recording until the parent stops us.
+        echo "fake recording" >"$output"
+        while true; do
+            sleep 1
+        done
+    fi
+    printf 'RIFF....WAVEfmt ' >"$output"
+    echo "fake audio" >>"$output"
+fi
+
+exit 0
