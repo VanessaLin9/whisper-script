@@ -11,4 +11,5 @@ chmod +x tests/fake_bin/ffmpeg tests/fake_bin/whisper-cli \
 
 echo "Running offline whisper-script regression tests..."
 PYTHONPATH="$ROOT" python3 tests/test_organize_recording.py -v
+PYTHONPATH="$ROOT" python3 tests/test_transcription_core.py -v
 bash tests/test_shell_workflows.sh
