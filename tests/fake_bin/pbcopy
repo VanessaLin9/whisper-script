@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# No-op clipboard stub for offline tests.
+set -euo pipefail
+cat >/dev/null
+exit 0
