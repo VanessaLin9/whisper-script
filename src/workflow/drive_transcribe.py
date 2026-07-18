@@ -77,6 +77,17 @@ def _map_core_stage(stage: Stage) -> WorkflowStage:
     return _CORE_STAGE_MAP.get(stage, WorkflowStage.TRANSCRIBE)
 
 
+def _outputs_with_required_txt(
+    requested: frozenset[ArtifactKind] | None,
+) -> frozenset[ArtifactKind] | None:
+    """Ensure raw transcript TXT is always retained for Phase 1 workflow results."""
+    if requested is None:
+        return None
+    if not requested:
+        raise ValueError("outputs must contain at least one artifact kind")
+    return frozenset(requested) | {ArtifactKind.TXT}
+
+
 class DriveTranscribeWorkflow:
     """Orchestrate downloader → Output Manager → Transcription Core."""
 
@@ -132,7 +143,7 @@ class DriveTranscribeWorkflow:
                 request.output_root,
                 source,
                 meeting_time,
-                outputs=request.outputs,
+                outputs=_outputs_with_required_txt(request.outputs),
                 normalize=request.normalize,
             )
             workspace = create_workspace(plan)
@@ -150,10 +161,21 @@ class DriveTranscribeWorkflow:
                 exc.message,
                 cause=exc,
             ) from exc
-        except Exception:
+        except Exception as exc:
             _cleanup_path(temp_download)
             temp_download = None
-            raise
+            message = str(exc) or exc.__class__.__name__
+            _emit(
+                on_progress,
+                WorkflowStage.WORKSPACE,
+                ProgressStatus.FAILED,
+                message,
+            )
+            raise WorkflowError(
+                WorkflowStage.WORKSPACE,
+                message,
+                cause=exc,
+            ) from exc
 
         # Managed copy is authoritative; drop the download temp.
         _cleanup_path(temp_download)
@@ -166,6 +188,10 @@ class DriveTranscribeWorkflow:
         )
 
         def _core_progress(event: ProgressEvent) -> None:
+            # Core emits FAILED before raising; workflow boundary owns the
+            # single terminal FAILED event for CLI/GUI consumers.
+            if event.status == ProgressStatus.FAILED:
+                return
             mapped = _map_core_stage(event.stage)
             _emit(on_progress, mapped, event.status, event.detail)
 
@@ -189,8 +215,33 @@ class DriveTranscribeWorkflow:
             mapped = _map_core_stage(exc.stage)
             _emit(on_progress, mapped, ProgressStatus.FAILED, exc.message)
             raise WorkflowError(mapped, exc.message, cause=exc) from exc
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            _emit(
+                on_progress,
+                WorkflowStage.TRANSCRIBE,
+                ProgressStatus.FAILED,
+                message,
+            )
+            raise WorkflowError(
+                WorkflowStage.TRANSCRIBE,
+                message,
+                cause=exc,
+            ) from exc
 
         raw_transcript = result.artifacts.get(ArtifactKind.TXT)
+        if raw_transcript is None:
+            _emit(
+                on_progress,
+                WorkflowStage.OUTPUT,
+                ProgressStatus.FAILED,
+                "Successful transcription missing required TXT artifact",
+            )
+            raise WorkflowError(
+                WorkflowStage.OUTPUT,
+                "Successful transcription missing required TXT artifact",
+            )
+
         return DriveTranscribeResult(
             workspace_dir=workspace.workspace_dir,
             raw_audio_path=workspace.audio_path,

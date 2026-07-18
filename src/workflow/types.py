@@ -53,7 +53,7 @@ class DriveTranscribeResult:
 
     workspace_dir: Path
     raw_audio_path: Path
-    raw_transcript_path: Path | None
+    raw_transcript_path: Path
     artifacts: Mapping[ArtifactKind, Path]
     normalized_audio_path: Path | None
     download_filename: str

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest import mock
 
 from src.drive import DownloadError, DownloadResult, DownloadStage
 from src.transcription.types import (
@@ -25,6 +26,7 @@ from src.workflow import (
     WorkflowError,
     WorkflowStage,
 )
+from src.workflow.types import WorkflowProgressEvent
 
 
 class FakeDownloader:
@@ -149,8 +151,6 @@ class DriveWorkflowTests(unittest.TestCase):
             self.assertTrue(result.raw_audio_path.is_file())
             self.assertEqual(result.raw_audio_path.read_bytes(), b"AUDIO")
             self.assertTrue(result.raw_audio_path.name.endswith(".m4a"))
-            self.assertIsNotNone(result.raw_transcript_path)
-            assert result.raw_transcript_path is not None
             self.assertTrue(result.raw_transcript_path.is_file())
             self.assertEqual(
                 set(result.artifacts),
@@ -246,8 +246,13 @@ class DriveWorkflowTests(unittest.TestCase):
             root = Path(tmp)
             audio_tmp = _write_temp_audio(root / "dl")
 
+            events: list[WorkflowProgressEvent] = []
+
             def fail_transcribe(request: TranscribeRequest, *, on_progress=None):
                 if on_progress is not None:
+                    on_progress(
+                        ProgressEvent(Stage.TRANSCRIBE, ProgressStatus.STARTED)
+                    )
                     on_progress(
                         ProgressEvent(
                             Stage.TRANSCRIBE,
@@ -270,8 +275,26 @@ class DriveWorkflowTests(unittest.TestCase):
                 transcribe_fn=fail_transcribe,
             )
             with self.assertRaises(WorkflowError) as ctx:
-                workflow.run(_request(root / "out"))
+                workflow.run(
+                    _request(root / "out"),
+                    on_progress=events.append,
+                )
             self.assertEqual(ctx.exception.stage, WorkflowStage.TRANSCRIBE)
+
+            failed = [e for e in events if e.status == ProgressStatus.FAILED]
+            self.assertEqual(len(failed), 1)
+            self.assertEqual(failed[0].stage, WorkflowStage.TRANSCRIBE)
+            self.assertEqual(
+                [(e.stage, e.status) for e in events],
+                [
+                    (WorkflowStage.DOWNLOAD, ProgressStatus.STARTED),
+                    (WorkflowStage.DOWNLOAD, ProgressStatus.FINISHED),
+                    (WorkflowStage.WORKSPACE, ProgressStatus.STARTED),
+                    (WorkflowStage.WORKSPACE, ProgressStatus.FINISHED),
+                    (WorkflowStage.TRANSCRIBE, ProgressStatus.STARTED),
+                    (WorkflowStage.TRANSCRIBE, ProgressStatus.FAILED),
+                ],
+            )
 
             workspaces = list((root / "out").iterdir())
             self.assertEqual(len(workspaces), 1)
@@ -283,6 +306,126 @@ class DriveWorkflowTests(unittest.TestCase):
             self.assertTrue(meta.is_file())
             # No successful transcript artifacts
             self.assertEqual(list(workspace.glob("*_transcription.*")), [])
+
+    def test_empty_outputs_is_typed_workspace_error(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio_tmp = _write_temp_audio(root / "dl")
+            calls: list[str] = []
+
+            def no_transcribe(*_a, **_k):  # noqa: ANN001
+                calls.append("transcribe")
+                raise AssertionError("must not transcribe")
+
+            workflow = DriveTranscribeWorkflow(
+                downloader=FakeDownloader(
+                    DownloadResult(
+                        file_id="abc123XYZ_-99",
+                        temp_path=audio_tmp,
+                        filename="meeting.m4a",
+                        content_type="audio/mp4",
+                        size_bytes=5,
+                    )
+                ),
+                transcribe_fn=no_transcribe,
+            )
+            events: list[WorkflowProgressEvent] = []
+            with self.assertRaises(WorkflowError) as ctx:
+                workflow.run(
+                    _request(root / "out", outputs=frozenset()),
+                    on_progress=events.append,
+                )
+            self.assertEqual(ctx.exception.stage, WorkflowStage.WORKSPACE)
+            self.assertIsInstance(ctx.exception.cause, ValueError)
+            self.assertEqual(calls, [])
+            self.assertFalse(audio_tmp.exists())
+            self.assertEqual(
+                [e.status for e in events if e.stage == WorkflowStage.WORKSPACE],
+                [ProgressStatus.STARTED, ProgressStatus.FAILED],
+            )
+
+    def test_unexpected_workspace_exception_is_typed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio_tmp = _write_temp_audio(root / "dl")
+            calls: list[str] = []
+
+            def no_transcribe(*_a, **_k):  # noqa: ANN001
+                calls.append("transcribe")
+                raise AssertionError("must not transcribe")
+
+            workflow = DriveTranscribeWorkflow(
+                downloader=FakeDownloader(
+                    DownloadResult(
+                        file_id="abc123XYZ_-99",
+                        temp_path=audio_tmp,
+                        filename="meeting.m4a",
+                        content_type="audio/mp4",
+                        size_bytes=5,
+                    )
+                ),
+                transcribe_fn=no_transcribe,
+            )
+            with mock.patch(
+                "src.workflow.drive_transcribe.create_workspace",
+                side_effect=RuntimeError("disk exploded"),
+            ):
+                with self.assertRaises(WorkflowError) as ctx:
+                    workflow.run(_request(root / "out"))
+            self.assertEqual(ctx.exception.stage, WorkflowStage.WORKSPACE)
+            self.assertIn("disk exploded", ctx.exception.message)
+            self.assertEqual(calls, [])
+            self.assertFalse(audio_tmp.exists())
+
+    def test_srt_only_request_still_returns_txt(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio_tmp = _write_temp_audio(root / "dl")
+            workflow = DriveTranscribeWorkflow(
+                downloader=FakeDownloader(
+                    DownloadResult(
+                        file_id="abc123XYZ_-99",
+                        temp_path=audio_tmp,
+                        filename="meeting.m4a",
+                        content_type="audio/mp4",
+                        size_bytes=5,
+                    )
+                ),
+                transcribe_fn=_fake_success_transcribe,
+            )
+            result = workflow.run(
+                _request(root / "out", outputs=frozenset({ArtifactKind.SRT}))
+            )
+            self.assertTrue(result.raw_transcript_path.is_file())
+            self.assertIn(ArtifactKind.TXT, result.artifacts)
+            self.assertIn(ArtifactKind.SRT, result.artifacts)
+
+    def test_unexpected_transcribe_exception_keeps_raw_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio_tmp = _write_temp_audio(root / "dl")
+
+            def boom(request: TranscribeRequest, *, on_progress=None):
+                raise RuntimeError("core panicked")
+
+            workflow = DriveTranscribeWorkflow(
+                downloader=FakeDownloader(
+                    DownloadResult(
+                        file_id="abc123XYZ_-99",
+                        temp_path=audio_tmp,
+                        filename="meeting.m4a",
+                        content_type="audio/mp4",
+                        size_bytes=5,
+                    )
+                ),
+                transcribe_fn=boom,
+            )
+            with self.assertRaises(WorkflowError) as ctx:
+                workflow.run(_request(root / "out"))
+            self.assertEqual(ctx.exception.stage, WorkflowStage.TRANSCRIBE)
+            workspace = next((root / "out").iterdir())
+            self.assertEqual((workspace / "meeting.m4a").read_bytes(), b"AUDIO")
+
 
 if __name__ == "__main__":
     unittest.main()
