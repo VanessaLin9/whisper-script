@@ -105,8 +105,14 @@ def ask_for_recording_time(detected: RecordingTime) -> RecordingTime:
         f"({detected.source})",
         file=sys.stderr,
     )
-    prompt = "Press Enter to accept, or enter YYYY-MM-DD HH:MM: "
-    response = input(prompt).strip()
+    # Prompt must go to stderr: callers capture stdout as JSON.
+    print(
+        "Press Enter to accept, or enter YYYY-MM-DD HH:MM: ",
+        end="",
+        file=sys.stderr,
+        flush=True,
+    )
+    response = sys.stdin.readline().rstrip("\n").strip()
     if not response:
         return detected
     try:

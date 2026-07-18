@@ -49,8 +49,18 @@ if [ ! -f "$ORGANIZER" ]; then
     exit 1
 fi
 
+set +e
 ORGANIZED_JSON="$(python3 "$ORGANIZER" "$ORIGINAL_IN" --records-dir "$MEETING_RECORDS_DIR")"
-MEETING_DIR="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["meeting_dir"])' <<< "$ORGANIZED_JSON")"
+ORGANIZER_STATUS=$?
+set -e
+if [ "$ORGANIZER_STATUS" -ne 0 ] || [ -z "$ORGANIZED_JSON" ]; then
+    echo "[!] Failed to organize recording into a meeting folder."
+    exit 1
+fi
+if ! MEETING_DIR="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["meeting_dir"])' <<< "$ORGANIZED_JSON")"; then
+    echo "[!] Organizer returned invalid JSON."
+    exit 1
+fi
 IN="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["audio_file"])' <<< "$ORGANIZED_JSON")"
 stem="$(python3 -c 'import json,sys; print(json.load(sys.stdin)["stem"])' <<< "$ORGANIZED_JSON")"
 
