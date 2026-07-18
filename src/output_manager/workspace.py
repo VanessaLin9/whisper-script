@@ -164,6 +164,16 @@ def _unique_temp_sibling(path: Path) -> Path:
     return path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
 
 
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte; treat short/zero progress as failure."""
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("os.write made no progress")
+        view = view[written:]
+
+
 class _WorkspaceCreateLock:
     """Per-workspace exclusive create lock (``O_CREAT|O_EXCL``)."""
 
@@ -183,11 +193,21 @@ class _WorkspaceCreateLock:
                 f"Workspace create already in progress or completed: {self.path}",
                 cause=exc,
             ) from exc
+        except OSError as exc:
+            raise WorkspaceError(
+                WorkspaceStage.CREATE,
+                f"Failed to acquire workspace create lock: {self.path}",
+                cause=exc,
+            ) from exc
         try:
-            os.write(self._fd, f"{os.getpid()}\n".encode("utf-8"))
-        except OSError:
+            _write_all(self._fd, f"{os.getpid()}\n".encode("utf-8"))
+        except OSError as exc:
             self.release()
-            raise
+            raise WorkspaceError(
+                WorkspaceStage.CREATE,
+                f"Failed to write workspace create lock: {self.path}",
+                cause=exc,
+            ) from exc
 
     def release(self) -> None:
         if self._fd is None:
@@ -212,12 +232,16 @@ def exclusive_write_text(path: Path, text: str) -> None:
             cause=exc,
         ) from exc
     try:
-        os.write(fd, data)
+        _write_all(fd, data)
     except Exception:
-        os.close(fd)
         _cleanup_path(path)
         raise
-    os.close(fd)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            _cleanup_path(path)
+            raise
 
 
 def exclusive_copy_file(source: Path, destination: Path) -> None:

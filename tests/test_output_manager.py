@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 import unittest
@@ -294,6 +295,73 @@ class MissingSourceTests(unittest.TestCase):
             with self.assertRaises(WorkspaceError) as ctx:
                 create_workspace(plan)
             self.assertEqual(ctx.exception.stage, WorkspaceStage.VALIDATE)
+
+
+class WriteAndLockFailureTests(unittest.TestCase):
+    def test_short_metadata_write_fails_without_residue(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            downloaded = root / "tmp-download.m4a"
+            downloaded.write_bytes(b"drive-bytes")
+            plan = plan_workspace(
+                root / "records",
+                SourceDescriptor(SourceKind.MANAGED_DOWNLOAD, downloaded),
+                datetime(2026, 7, 17, 15, 0),
+            )
+            real_write = os.write
+            meta_writes = {"count": 0}
+
+            def flaky_write(fd: int, data: object) -> int:
+                payload = (
+                    data.tobytes() if isinstance(data, memoryview) else bytes(data)
+                )
+                if b"source_kind" in payload or meta_writes["count"] > 0:
+                    meta_writes["count"] += 1
+                    if meta_writes["count"] == 1 and len(payload) > 1:
+                        return 1  # short write
+                    return 0  # then no progress
+                return real_write(fd, data)
+
+            with patch("src.output_manager.workspace.os.write", side_effect=flaky_write):
+                with self.assertRaises(WorkspaceError) as ctx:
+                    create_workspace(plan)
+            self.assertEqual(ctx.exception.stage, WorkspaceStage.WRITE_METADATA)
+            self.assertEqual(downloaded.read_bytes(), b"drive-bytes")
+            self.assertFalse(plan.metadata_path.exists())
+            assert plan.managed_audio_path is not None
+            self.assertFalse(plan.managed_audio_path.exists())
+            self.assertFalse((plan.workspace_dir / ".create.lock").exists())
+
+    def test_lock_payload_write_failure_is_typed_and_removes_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "clip.wav"
+            source.write_bytes(b"keep-me")
+            plan = plan_workspace(
+                root / "records",
+                SourceDescriptor(SourceKind.LOCAL_REFERENCE, source),
+                datetime(2026, 7, 17, 15, 0),
+            )
+            real_write = os.write
+
+            def boom_lock_write(fd: int, data: object) -> int:
+                payload = (
+                    data.tobytes() if isinstance(data, memoryview) else bytes(data)
+                )
+                if payload.endswith(b"\n") and payload[:-1].isdigit():
+                    raise OSError("disk full")
+                return real_write(fd, data)
+
+            with patch(
+                "src.output_manager.workspace.os.write",
+                side_effect=boom_lock_write,
+            ):
+                with self.assertRaises(WorkspaceError) as ctx:
+                    create_workspace(plan)
+            self.assertEqual(ctx.exception.stage, WorkspaceStage.CREATE)
+            self.assertEqual(source.read_bytes(), b"keep-me")
+            self.assertFalse(plan.metadata_path.exists())
+            self.assertFalse((plan.workspace_dir / ".create.lock").exists())
 
 
 class RaceTests(unittest.TestCase):
