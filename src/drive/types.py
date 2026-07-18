@@ -43,7 +43,15 @@ class DownloadError(Exception):
 
 @dataclass(frozen=True)
 class HttpResponse:
+    """HTTP result with body streamed to ``body_path`` (not fully buffered in RAM).
+
+    ``peek`` holds the first bytes for HTML / content-type checks without
+    reloading the whole payload.
+    """
+
     status_code: int
     headers: dict[str, str]
-    body: bytes
     url: str
+    peek: bytes
+    size_bytes: int
+    body_path: Path | None = None

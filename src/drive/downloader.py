@@ -2,13 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 import re
 import tempfile
 from email.message import EmailMessage
 from pathlib import Path
 
-from .http import HttpClient, UrllibHttpClient, is_absolute_http_url, resolve_redirect_url
+from .http import (
+    HttpClient,
+    UrllibHttpClient,
+    cleanup_http_body,
+    is_absolute_http_url,
+    resolve_redirect_url,
+)
 from .types import DownloadError, DownloadResult, DownloadStage, HttpResponse
 from .url import parse_public_drive_url, redact_url_for_logs, uc_download_url
 
@@ -34,6 +41,26 @@ _SAFE_AUDIO_SUFFIXES = frozenset(
         ".mov",
     }
 )
+_MIME_TO_SUFFIX = {
+    "audio/mpeg": ".mp3",
+    "audio/mp3": ".mp3",
+    "audio/mp4": ".m4a",
+    "audio/x-m4a": ".m4a",
+    "audio/m4a": ".m4a",
+    "audio/wav": ".wav",
+    "audio/x-wav": ".wav",
+    "audio/wave": ".wav",
+    "audio/flac": ".flac",
+    "audio/x-flac": ".flac",
+    "audio/ogg": ".ogg",
+    "audio/opus": ".opus",
+    "audio/webm": ".webm",
+    "audio/aac": ".aac",
+    "audio/x-aac": ".aac",
+    "video/mp4": ".mp4",
+    "video/webm": ".webm",
+    "video/quicktime": ".mov",
+}
 _UNSAFE_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 _CONFIRM = re.compile(
     r"confirm=([0-9A-Za-z_-]+)",
@@ -56,6 +83,12 @@ _HTML_HINTS = (
 )
 
 
+def file_ref_for_logs(file_id: str) -> str:
+    """Stable non-reversible token for logs (never the raw Drive file id)."""
+    digest = hashlib.sha256(file_id.encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
 def sanitize_filename(name: str, *, fallback: str = "drive_audio") -> str:
     cleaned = Path(name or "").name.strip()
     cleaned = _UNSAFE_NAME.sub("-", cleaned)
@@ -64,14 +97,17 @@ def sanitize_filename(name: str, *, fallback: str = "drive_audio") -> str:
         cleaned = fallback
     stem = Path(cleaned).stem or fallback
     suffix = Path(cleaned).suffix.lower()
-    if suffix and suffix not in _SAFE_AUDIO_SUFFIXES:
+    if not suffix:
+        raise DownloadError(
+            DownloadStage.VALIDATE,
+            "Download filename is missing a supported media suffix",
+        )
+    if suffix not in _SAFE_AUDIO_SUFFIXES:
         raise DownloadError(
             DownloadStage.VALIDATE,
             f"Unsupported or unsafe download filename suffix: {suffix}",
         )
-    if not suffix:
-        suffix = ".bin"
-        cleaned = f"{stem}{suffix}"
+    cleaned = f"{stem}{suffix}"
     if len(cleaned) > 120:
         cleaned = f"{stem[:80]}{suffix}"
     return cleaned
@@ -82,20 +118,45 @@ def filename_from_content_disposition(header: str | None) -> str | None:
         return None
     message = EmailMessage()
     message["content-disposition"] = header
-    filename = message.get_filename()
-    return filename
+    return message.get_filename()
 
 
-def _looks_like_html(body: bytes, content_type: str | None) -> bool:
+def suffix_from_content_type(content_type: str | None) -> str | None:
+    if not content_type:
+        return None
+    mime = content_type.split(";", 1)[0].strip().lower()
+    return _MIME_TO_SUFFIX.get(mime)
+
+
+def resolve_download_filename(
+    *,
+    content_disposition: str | None,
+    content_type: str | None,
+) -> str:
+    """Require a safe media suffix from Content-Disposition or allow-listed MIME."""
+    disposition_name = filename_from_content_disposition(content_disposition)
+    if disposition_name:
+        return sanitize_filename(disposition_name)
+
+    suffix = suffix_from_content_type(content_type)
+    if suffix is None:
+        raise DownloadError(
+            DownloadStage.VALIDATE,
+            "Missing Content-Disposition filename and unsupported or missing media Content-Type",
+        )
+    return sanitize_filename(f"drive_audio{suffix}")
+
+
+def _looks_like_html(peek: bytes, content_type: str | None) -> bool:
     ctype = (content_type or "").lower()
     if "text/html" in ctype or "application/xhtml" in ctype:
         return True
-    sample = body[:2048].lstrip().lower()
+    sample = peek[:2048].lstrip().lower()
     return any(hint in sample for hint in _HTML_HINTS)
 
 
-def _is_permission_page(body: bytes) -> bool:
-    sample = body[:8192].lower()
+def _is_permission_page(sample: bytes) -> bool:
+    lowered = sample[:8192].lower()
     markers = (
         b"you need access",
         b"request access",
@@ -103,13 +164,22 @@ def _is_permission_page(body: bytes) -> bool:
         b"accounts.google.com",
         b"permission denied",
     )
-    return any(marker in sample for marker in markers)
+    return any(marker in lowered for marker in markers)
 
 
 def extract_confirm_token(body: bytes) -> str | None:
     text = body.decode("utf-8", errors="ignore")
     match = _CONFIRM_FORM.search(text) or _CONFIRM.search(text)
     return match.group(1) if match else None
+
+
+def _read_body_bytes(response: HttpResponse, *, limit: int | None = None) -> bytes:
+    if response.body_path is None:
+        return response.peek if not limit else response.peek[:limit]
+    data = response.body_path.read_bytes()
+    if limit is not None:
+        return data[:limit]
+    return data
 
 
 class PublicDriveDownloader:
@@ -125,6 +195,14 @@ class PublicDriveDownloader:
         max_confirmations: int = DEFAULT_MAX_CONFIRMATIONS,
         temp_dir: Path | None = None,
     ) -> None:
+        if timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be > 0")
+        if max_redirects < 0:
+            raise ValueError("max_redirects must be >= 0")
+        if max_retries < 1:
+            raise ValueError("max_retries must be >= 1")
+        if max_confirmations < 0:
+            raise ValueError("max_confirmations must be >= 0")
         self._http = http or UrllibHttpClient()
         self._timeout = timeout_seconds
         self._max_redirects = max_redirects
@@ -136,63 +214,74 @@ class PublicDriveDownloader:
         parsed = parse_public_drive_url(drive_url)
         url = parsed.canonical_url
         confirmations = 0
-        attempt = 0
-        last_error: DownloadError | None = None
+        retries_used = 0
+        file_ref = file_ref_for_logs(parsed.file_id)
 
-        while attempt < self._max_retries:
-            attempt += 1
+        while True:
+            response: HttpResponse | None = None
             try:
                 response = self._get_with_redirect_budget(url)
                 self._assert_http_ok(response)
                 content_type = response.headers.get("content-type")
 
-                if _looks_like_html(response.body, content_type):
-                    if _is_permission_page(response.body):
+                if _looks_like_html(response.peek, content_type):
+                    body = _read_body_bytes(response)
+                    cleanup_http_body(response)
+                    response = None
+                    if _is_permission_page(body):
                         raise DownloadError(
                             DownloadStage.DOWNLOAD,
                             "Drive file is not publicly accessible (permission page)",
-                            status_code=response.status_code,
+                            status_code=200,
                         )
-                    token = extract_confirm_token(response.body)
+                    token = extract_confirm_token(body)
                     if token and confirmations < self._max_confirmations:
                         confirmations += 1
                         url = uc_download_url(parsed.file_id, confirm=token)
                         logger.info(
-                            "Drive download confirmation required for file_id=%s (attempt %s)",
-                            parsed.file_id,
+                            "Drive download confirmation required ref=%s (attempt %s)",
+                            file_ref,
                             confirmations,
                         )
+                        # Confirmation budget is independent of transient retries.
                         continue
+                    if token and confirmations >= self._max_confirmations:
+                        raise DownloadError(
+                            DownloadStage.VALIDATE,
+                            f"Exceeded confirmation limit ({self._max_confirmations})",
+                        )
                     raise DownloadError(
                         DownloadStage.VALIDATE,
                         "Drive returned an HTML page instead of file content",
-                        status_code=response.status_code,
+                        status_code=200,
                     )
 
-                if not response.body:
+                if response.size_bytes == 0:
+                    cleanup_http_body(response)
+                    response = None
                     raise DownloadError(
                         DownloadStage.VALIDATE,
                         "Downloaded Drive content is empty",
-                        status_code=response.status_code,
+                        status_code=200,
                     )
 
-                filename = filename_from_content_disposition(
-                    response.headers.get("content-disposition")
+                safe_name = resolve_download_filename(
+                    content_disposition=response.headers.get("content-disposition"),
+                    content_type=content_type,
                 )
-                safe_name = sanitize_filename(
-                    filename or f"drive_{parsed.file_id}.bin"
-                )
-                temp_path = self._write_temp(safe_name, response.body)
+                temp_path = self._finalize_temp(response, safe_name)
+                response = None
                 return DownloadResult(
                     file_id=parsed.file_id,
                     temp_path=temp_path,
                     filename=safe_name,
                     content_type=content_type,
-                    size_bytes=len(response.body),
+                    size_bytes=temp_path.stat().st_size,
                 )
             except DownloadError as exc:
-                last_error = exc
-                # Retry only transient transport / 5xx failures.
+                if response is not None:
+                    cleanup_http_body(response)
+                    response = None
                 retryable = (
                     exc.stage == DownloadStage.DOWNLOAD
                     and (
@@ -202,18 +291,18 @@ class PublicDriveDownloader:
                     and "redirect limit" not in exc.message.lower()
                     and "not publicly accessible" not in exc.message.lower()
                 )
-                if not retryable or attempt >= self._max_retries:
+                if not retryable:
+                    raise
+                retries_used += 1
+                if retries_used >= self._max_retries:
                     raise
                 logger.warning(
-                    "Drive download retry %s/%s for file_id=%s stage=%s",
-                    attempt,
+                    "Drive download retry %s/%s ref=%s stage=%s",
+                    retries_used,
                     self._max_retries,
-                    parsed.file_id,
+                    file_ref,
                     exc.stage.value,
                 )
-
-        assert last_error is not None
-        raise last_error
 
     def _get_with_redirect_budget(self, url: str) -> HttpResponse:
         current = url
@@ -225,8 +314,10 @@ class PublicDriveDownloader:
                 timeout=self._timeout,
                 headers={"User-Agent": "whisper-script-drive-downloader/1.0"},
                 allow_redirects=False,
+                temp_dir=self._temp_dir,
             )
             if response.status_code in {301, 302, 303, 307, 308}:
+                cleanup_http_body(response)
                 location = response.headers.get("location")
                 nxt = resolve_redirect_url(current, location or "")
                 if not is_absolute_http_url(nxt):
@@ -270,30 +361,33 @@ class PublicDriveDownloader:
                 status_code=code,
             )
 
-    def _write_temp(self, filename: str, body: bytes) -> Path:
-        path: Path | None = None
-        try:
-            directory = Path(self._temp_dir) if self._temp_dir else None
-            if directory is not None:
-                directory.mkdir(parents=True, exist_ok=True)
-            handle = tempfile.NamedTemporaryFile(
-                prefix="whisper-drive-",
-                suffix=Path(filename).suffix,
-                delete=False,
-                dir=str(directory) if directory else None,
-            )
-            path = Path(handle.name)
-            with handle:
-                handle.write(body)
-            return path
-        except OSError as exc:
-            if path is not None:
-                try:
-                    path.unlink(missing_ok=True)
-                except OSError:
-                    pass
+    def _finalize_temp(self, response: HttpResponse, filename: str) -> Path:
+        if response.body_path is None:
             raise DownloadError(
                 DownloadStage.TEMP_STORE,
-                "Failed to write downloaded Drive file to temporary storage",
+                "Download stream completed without a temporary body file",
+            )
+        directory = Path(self._temp_dir) if self._temp_dir else response.body_path.parent
+        directory.mkdir(parents=True, exist_ok=True)
+        handle = tempfile.NamedTemporaryFile(
+            prefix="whisper-drive-",
+            suffix=Path(filename).suffix,
+            delete=False,
+            dir=str(directory),
+        )
+        handle.close()
+        dest = Path(handle.name)
+        try:
+            response.body_path.replace(dest)
+            return dest
+        except OSError as exc:
+            try:
+                dest.unlink(missing_ok=True)
+            except OSError:
+                pass
+            cleanup_http_body(response)
+            raise DownloadError(
+                DownloadStage.TEMP_STORE,
+                "Failed to finalize downloaded Drive file in temporary storage",
                 cause=exc,
             ) from exc
