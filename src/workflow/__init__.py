@@ -1,7 +1,7 @@
-"""Phase 1 application workflow (Checkpoint 04.2).
+"""Phase 1 application workflow (Checkpoints 04.2–04.3).
 
-Thin orchestration only: Drive downloader → Output Manager → Transcription Core.
-No CLI display strings and no GUI/OAuth/post-processing.
+Thin orchestration: Drive downloader → Output Manager → Transcription Core.
+CLI entry: ``python3 -m src.workflow``.
 """
 
 from .drive_transcribe import DriveTranscribeWorkflow
