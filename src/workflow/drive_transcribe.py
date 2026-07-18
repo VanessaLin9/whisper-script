@@ -124,6 +124,19 @@ class DriveTranscribeWorkflow:
                 exc.message,
                 cause=exc,
             ) from exc
+        except Exception as exc:
+            message = str(exc) or exc.__class__.__name__
+            _emit(
+                on_progress,
+                WorkflowStage.DOWNLOAD,
+                ProgressStatus.FAILED,
+                message,
+            )
+            raise WorkflowError(
+                WorkflowStage.DOWNLOAD,
+                message,
+                cause=exc,
+            ) from exc
         temp_download = download.temp_path
         _emit(
             on_progress,

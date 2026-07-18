@@ -194,6 +194,35 @@ class DriveWorkflowTests(unittest.TestCase):
             self.assertEqual(calls, [])
             self.assertEqual(list((Path(tmp) / "out").glob("*")), [])
 
+    def test_unexpected_download_exception_is_typed(self) -> None:
+        calls: list[str] = []
+
+        def boom_transcribe(*_a, **_k):  # noqa: ANN001
+            calls.append("transcribe")
+            raise AssertionError("transcribe must not run")
+
+        events: list[WorkflowProgressEvent] = []
+        workflow = DriveTranscribeWorkflow(
+            downloader=FakeDownloader(error=RuntimeError("adapter panicked")),
+            transcribe_fn=boom_transcribe,
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "out"
+            with self.assertRaises(WorkflowError) as ctx:
+                workflow.run(_request(out), on_progress=events.append)
+            self.assertEqual(ctx.exception.stage, WorkflowStage.DOWNLOAD)
+            self.assertIn("adapter panicked", ctx.exception.message)
+            self.assertIsInstance(ctx.exception.cause, RuntimeError)
+            self.assertEqual(calls, [])
+            self.assertFalse(out.exists())
+            self.assertEqual(
+                [(e.stage, e.status) for e in events],
+                [
+                    (WorkflowStage.DOWNLOAD, ProgressStatus.STARTED),
+                    (WorkflowStage.DOWNLOAD, ProgressStatus.FAILED),
+                ],
+            )
+
     def test_workspace_conflict_fail_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
