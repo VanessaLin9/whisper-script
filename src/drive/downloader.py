@@ -25,6 +25,9 @@ DEFAULT_TIMEOUT_SECONDS = 30.0
 DEFAULT_MAX_REDIRECTS = 5
 DEFAULT_MAX_RETRIES = 3
 DEFAULT_MAX_CONFIRMATIONS = 2
+# Bound HTML parse reads so confirmation / permission checks cannot load
+# an arbitrarily large error page into RAM.
+MAX_HTML_PARSE_BYTES = 64 * 1024
 
 _SAFE_AUDIO_SUFFIXES = frozenset(
     {
@@ -173,13 +176,14 @@ def extract_confirm_token(body: bytes) -> str | None:
     return match.group(1) if match else None
 
 
-def _read_body_bytes(response: HttpResponse, *, limit: int | None = None) -> bytes:
+def _read_body_prefix(response: HttpResponse, *, limit: int = MAX_HTML_PARSE_BYTES) -> bytes:
+    """Read at most ``limit`` bytes for HTML validation (never full-file load)."""
+    if limit <= 0:
+        return b""
     if response.body_path is None:
-        return response.peek if not limit else response.peek[:limit]
-    data = response.body_path.read_bytes()
-    if limit is not None:
-        return data[:limit]
-    return data
+        return response.peek[:limit]
+    with response.body_path.open("rb") as handle:
+        return handle.read(limit)
 
 
 class PublicDriveDownloader:
@@ -225,7 +229,8 @@ class PublicDriveDownloader:
                 content_type = response.headers.get("content-type")
 
                 if _looks_like_html(response.peek, content_type):
-                    body = _read_body_bytes(response)
+                    body = _read_body_prefix(response, limit=MAX_HTML_PARSE_BYTES)
+                    oversized = response.size_bytes > MAX_HTML_PARSE_BYTES
                     cleanup_http_body(response)
                     response = None
                     if _is_permission_page(body):
@@ -249,6 +254,12 @@ class PublicDriveDownloader:
                         raise DownloadError(
                             DownloadStage.VALIDATE,
                             f"Exceeded confirmation limit ({self._max_confirmations})",
+                        )
+                    if oversized and not token:
+                        raise DownloadError(
+                            DownloadStage.VALIDATE,
+                            "Drive returned an oversized HTML page instead of file content",
+                            status_code=200,
                         )
                     raise DownloadError(
                         DownloadStage.VALIDATE,

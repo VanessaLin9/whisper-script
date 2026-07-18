@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import http.client
 import ssl
 import tempfile
 import urllib.error
@@ -125,9 +126,12 @@ class UrllibHttpClient:
         raw_headers_obj = getattr(response, "headers", None) or {}
         raw_headers = {str(k).lower(): v for k, v in raw_headers_obj.items()}
         final_url = getattr(response, "geturl", lambda: fallback_url)()
+        redacted = redact_url_for_logs(fallback_url)
         path: Path | None = None
+        handle = None
         peek = bytearray()
         size = 0
+
         try:
             directory = Path(temp_dir) if temp_dir is not None else None
             if directory is not None:
@@ -139,46 +143,79 @@ class UrllibHttpClient:
                 dir=str(directory) if directory else None,
             )
             path = Path(handle.name)
-            with handle:
-                while True:
-                    chunk = response.read(self._chunk_size)  # type: ignore[attr-defined]
-                    if not chunk:
-                        break
-                    handle.write(chunk)
-                    size += len(chunk)
-                    if len(peek) < self._peek_size:
-                        need = self._peek_size - len(peek)
-                        peek.extend(chunk[:need])
-            if size == 0:
+        except OSError as exc:
+            raise DownloadError(
+                DownloadStage.TEMP_STORE,
+                f"Failed to create temporary file for {redacted}",
+                cause=exc,
+            ) from exc
+
+        try:
+            while True:
                 try:
-                    path.unlink(missing_ok=True)
+                    chunk = response.read(self._chunk_size)  # type: ignore[attr-defined]
+                except (
+                    TimeoutError,
+                    ssl.SSLError,
+                    http.client.HTTPException,
+                    ConnectionError,
+                    OSError,
+                ) as exc:
+                    raise DownloadError(
+                        DownloadStage.DOWNLOAD,
+                        f"Failed while reading response from {redacted}",
+                        cause=exc,
+                    ) from exc
+                if not chunk:
+                    break
+                try:
+                    handle.write(chunk)
+                except OSError as exc:
+                    raise DownloadError(
+                        DownloadStage.TEMP_STORE,
+                        f"Failed while writing streamed response from {redacted}",
+                        cause=exc,
+                    ) from exc
+                size += len(chunk)
+                if len(peek) < self._peek_size:
+                    need = self._peek_size - len(peek)
+                    peek.extend(chunk[:need])
+            try:
+                handle.close()
+            except OSError as exc:
+                raise DownloadError(
+                    DownloadStage.TEMP_STORE,
+                    f"Failed while closing streamed response from {redacted}",
+                    cause=exc,
+                ) from exc
+            handle = None
+        except DownloadError:
+            if handle is not None:
+                try:
+                    handle.close()
                 except OSError:
                     pass
-                path = None
-            return HttpResponse(
-                status_code=status,
-                headers=raw_headers,
-                url=final_url,
-                peek=bytes(peek),
-                size_bytes=size,
-                body_path=path,
-            )
-        except (OSError, TimeoutError, ssl.SSLError) as exc:
             if path is not None:
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:
                     pass
-            stage = (
-                DownloadStage.TEMP_STORE
-                if isinstance(exc, OSError) and not isinstance(exc, TimeoutError)
-                else DownloadStage.DOWNLOAD
-            )
-            raise DownloadError(
-                stage,
-                f"Failed while streaming response from {redact_url_for_logs(fallback_url)}",
-                cause=exc,
-            ) from exc
+            raise
+
+        if size == 0:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
+            path = None
+        return HttpResponse(
+            status_code=status,
+            headers=raw_headers,
+            url=final_url,
+            peek=bytes(peek),
+            size_bytes=size,
+            body_path=path,
+        )
 
 
 def cleanup_http_body(response: HttpResponse) -> None:

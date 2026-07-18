@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
-import logging
+import http.client
 import tempfile
 import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 from src.drive import (
     DownloadError,
@@ -20,8 +21,34 @@ from src.drive import (
     resolve_download_filename,
     sanitize_filename,
 )
+from src.drive.downloader import MAX_HTML_PARSE_BYTES
 from src.drive.http import UrllibHttpClient, cleanup_http_body
 from src.drive.types import HttpResponse
+
+
+class _FakeResponse:
+    def __init__(self, *, raise_on_read: BaseException | None = None, body: bytes = b"") -> None:
+        self.status = 200
+        self.headers = {"content-type": "audio/mpeg"}
+        self._raise = raise_on_read
+        self._body = body
+        self._offset = 0
+
+    def geturl(self) -> str:
+        return "https://drive.google.com/uc?export=download&id=abc123XYZ_-99"
+
+    def read(self, size: int = -1) -> bytes:
+        if self._raise is not None:
+            raise self._raise
+        if self._offset >= len(self._body):
+            return b""
+        if size < 0:
+            chunk = self._body[self._offset :]
+            self._offset = len(self._body)
+            return chunk
+        chunk = self._body[self._offset : self._offset + size]
+        self._offset += len(chunk)
+        return chunk
 
 
 class FakeHttpClient:
@@ -243,6 +270,55 @@ class SanitizeTests(unittest.TestCase):
 
 
 class UrllibClientTests(unittest.TestCase):
+    def test_connection_reset_is_download_stage_and_cleans_partial(self) -> None:
+        client = UrllibHttpClient(chunk_size=4, peek_size=8)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(DownloadError) as ctx:
+                client._stream_response(
+                    _FakeResponse(raise_on_read=ConnectionResetError("reset")),
+                    fallback_url="https://drive.google.com/uc?id=abc123XYZ_-99&confirm=SECRET",
+                    temp_dir=Path(tmp),
+                )
+            self.assertEqual(ctx.exception.stage, DownloadStage.DOWNLOAD)
+            self.assertEqual(list(Path(tmp).glob("whisper-drive-http-*")), [])
+
+    def test_incomplete_read_is_download_stage_and_cleans_partial(self) -> None:
+        client = UrllibHttpClient(chunk_size=4, peek_size=8)
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaises(DownloadError) as ctx:
+                client._stream_response(
+                    _FakeResponse(
+                        raise_on_read=http.client.IncompleteRead(partial=b"abc")
+                    ),
+                    fallback_url="https://drive.google.com/uc?id=abc123XYZ_-99",
+                    temp_dir=Path(tmp),
+                )
+            self.assertEqual(ctx.exception.stage, DownloadStage.DOWNLOAD)
+            self.assertEqual(list(Path(tmp).glob("whisper-drive-http-*")), [])
+
+    def test_connection_reset_is_retried_by_downloader(self) -> None:
+        class ResetThenOk(FakeHttpClient):
+            def request(self, method, url, **kwargs):  # noqa: ANN001
+                if not self.calls:
+                    self.calls.append((method, url))
+                    raise DownloadError(
+                        DownloadStage.DOWNLOAD,
+                        "Failed while reading response from https://drive.google.com/uc",
+                        cause=ConnectionResetError("reset"),
+                    )
+                return super().request(method, url, **kwargs)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            client = ResetThenOk([_ok_audio()])
+            downloader = PublicDriveDownloader(
+                client, temp_dir=Path(tmp), max_retries=2
+            )
+            result = downloader.download(
+                "https://drive.google.com/file/d/abc123XYZ_-99/view"
+            )
+            self.assertEqual(result.filename, "meeting.m4a")
+            self.assertEqual(len(client.calls), 2)
+
     def test_does_not_auto_follow_redirects(self) -> None:
         class Handler(BaseHTTPRequestHandler):
             def log_message(self, format: str, *args: object) -> None:  # noqa: A003
@@ -336,6 +412,36 @@ class DownloaderTests(unittest.TestCase):
         with self.assertRaises(DownloadError) as ctx:
             downloader.download("https://drive.google.com/file/d/abc123XYZ_-99/view")
         self.assertEqual(ctx.exception.stage, DownloadStage.VALIDATE)
+
+    def test_large_html_uses_bounded_prefix_not_full_read(self) -> None:
+        prefix = b'<html><form><input name="confirm" value="tOkEn123"/></form>'
+        huge = prefix + (b"x" * (MAX_HTML_PARSE_BYTES * 3))
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeHttpClient(
+                [
+                    {
+                        "status_code": 200,
+                        "headers": {"content-type": "text/html"},
+                        "body": huge,
+                        "url": "https://drive.google.com/uc?export=download&id=abc123XYZ_-99",
+                    },
+                    _ok_audio(b"MP3DATA", filename="ok.mp3", content_type="audio/mpeg"),
+                ],
+                chunk_size=1024,
+            )
+            downloader = PublicDriveDownloader(
+                client, temp_dir=Path(tmp), max_retries=1
+            )
+            with mock.patch.object(
+                Path,
+                "read_bytes",
+                side_effect=AssertionError("full-file read_bytes must not be used"),
+            ):
+                result = downloader.download(
+                    "https://drive.google.com/file/d/abc123XYZ_-99/view"
+                )
+            self.assertEqual(result.filename, "ok.mp3")
+            self.assertEqual(result.temp_path.read_bytes(), b"MP3DATA")
 
     def test_confirmation_with_max_retries_one_succeeds(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
