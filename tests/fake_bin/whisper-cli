@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# Deterministic whisper-cli stub for offline tests.
+set -euo pipefail
+
+input=""
+output_base=""
+prev=""
+
+for arg in "$@"; do
+    case "$prev" in
+        -f) input="$arg" ;;
+        --output-file) output_base="$arg" ;;
+    esac
+    prev="$arg"
+done
+
+if [ -z "$input" ] || [ -z "$output_base" ]; then
+    echo "usage stub: whisper-cli -f <audio> --output-file <base>" >&2
+    exit 2
+fi
+
+base_name="$(basename "$input")"
+if [ -n "${FAIL_SEGMENTS:-}" ]; then
+    case " ${FAIL_SEGMENTS} " in
+        *" ${base_name} "*|*" ${base_name%.wav} "*)
+            echo "simulated failure for ${base_name}" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+mkdir -p "$(dirname "$output_base")"
+echo "transcript for ${base_name}" >"${output_base}.txt"
+echo "1" >"${output_base}.srt"
+echo "WEBVTT" >"${output_base}.vtt"
+echo "{}" >"${output_base}.json"
+exit 0

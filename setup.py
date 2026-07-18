@@ -1,23 +1,13 @@
 import argparse
-import os, re, shlex, shutil, subprocess, sys
+import os, shutil, subprocess, sys
 from subprocess import CalledProcessError
 from pathlib import Path
 
-# -------- util: Load .env (key=value only, ignore comments/empty lines) --------
-def load_env(env_path: Path) -> dict:
-    env = {}
-    if not env_path.exists():
-        raise FileNotFoundError(f".env not found: {env_path}")
-    for line in env_path.read_text(encoding="utf-8").splitlines():
-        if not line or line.strip().startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        try:
-            parsed = shlex.split(v, comments=True, posix=True)
-        except ValueError as exc:
-            raise ValueError(f"Invalid .env value for {k.strip()}: {exc}") from exc
-        env[k.strip()] = os.path.expandvars(" ".join(parsed))
-    return env
+_REPO_ROOT = Path(__file__).resolve().parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from env_loader import load_env, validate_model_language
 
 # -------- folder helpers --------
 def ensure_dir(p: Path):
@@ -212,7 +202,14 @@ def init_whisper_environment(whisper_root: Path, models: list[str]) -> dict:
     }
 
 # -------- main --------
-def check_environment(whisper_root: Path, models: list[str], directories: list[Path]) -> bool:
+def check_environment(
+    whisper_root: Path,
+    models: list[str],
+    directories: list[Path],
+    *,
+    preferred_model: str,
+    default_language: str,
+) -> bool:
     """Report environment readiness without installing or modifying anything."""
     checks = [
         ("git", which("git")),
@@ -227,9 +224,14 @@ def check_environment(whisper_root: Path, models: list[str], directories: list[P
         ),
     ]
 
+    missing_models: list[tuple[str, Path]] = []
     for model_name in models:
         model_path = whisper_root / "models" / f"ggml-{model_name}.bin"
-        checks.append((f"model {model_name}", model_path if model_path.is_file() and model_path.stat().st_size > 0 else None))
+        if model_path.is_file() and model_path.stat().st_size > 0:
+            checks.append((f"model {model_name}", model_path))
+        else:
+            checks.append((f"model {model_name}", None))
+            missing_models.append((model_name, model_path))
 
     print("\nEnvironment check")
     print("=" * 60)
@@ -241,11 +243,26 @@ def check_environment(whisper_root: Path, models: list[str], directories: list[P
             print(f"❌ {label}: not found")
             ready = False
 
+    try:
+        validate_model_language(preferred_model, default_language)
+        print(f"✅ model/language: {preferred_model} + {default_language}")
+    except ValueError as exc:
+        print(f"❌ model/language: {exc}")
+        ready = False
+
     for directory in directories:
         if directory.is_dir():
             print(f"✅ directory: {directory}")
         else:
             print(f"⚠️  directory will be created during install: {directory}")
+
+    if missing_models:
+        print()
+        print("Missing configured model(s). English-only files (*.en.bin) do not satisfy a multilingual setting.")
+        for model_name, model_path in missing_models:
+            print(f"  • expected: {model_path}")
+            print(f"    download: cd {whisper_root} && bash ./models/download-ggml-model.sh {model_name}")
+        print("  • or run: python3 setup.py install")
 
     print("=" * 60)
     print("✅ Environment is ready" if ready else "❌ Environment is not ready; run: python3 setup.py install")
@@ -296,8 +313,16 @@ def main():
             whisper_root,
             models_to_download,
             [records_dir, transcripts_dir, repo_root / "logs"],
+            preferred_model=preferred,
+            default_language=default_language,
         )
         return 0 if ready else 1
+
+    try:
+        validate_model_language(preferred, default_language)
+    except ValueError as exc:
+        print(f"❌ {exc}")
+        return 1
 
     # Create directories
     ensure_dir(records_dir)

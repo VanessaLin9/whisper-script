@@ -235,18 +235,32 @@ python3 setup.py install
 - 使用 FFmpeg 列出裝置並修正 `.env` 中的 `MIC_DEVICE`
 - 查看 `MEETING_RECORDS_DIR` 中對應的 `ffmpeg_*.log`
 
+## 測試
+
+離線 regression tests（不使用網路、麥克風、真實模型、剪貼簿或 Finder）：
+
+```bash
+bash tests/run_tests.sh
+```
+
 ## 專案結構
 
 ```text
 whisper-script/
 ├── .env.example
 ├── README.md
+├── env_loader.py
 ├── setup.py
 ├── cli.py
 ├── scripts/
+│   ├── lib/common.sh
+│   ├── organize_recording.py
 │   ├── record-meeting.sh
 │   ├── transcribe-english.sh
 │   └── multi-lang.sh
+├── tests/
+│   ├── run_tests.sh
+│   └── test_organize_recording.py
 ├── pipelines/
 │   └── multilang_batch.py
 └── src/
