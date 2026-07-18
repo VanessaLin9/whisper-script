@@ -7,8 +7,9 @@
 ## 功能
 
 - 使用 macOS AVFoundation 錄製會議，停止後自動轉錄
-- 將既有音訊正規化為 16 kHz 單聲道 WAV 後轉錄
-- 輸出 TXT、SRT、VTT 與 JSON
+- 將既有本機音訊正規化為 16 kHz 單聲道 WAV 後轉錄
+- 接受 **公開 Google Drive 連結**，下載後寫入 meeting workspace 再本機轉錄（無需 GUI／OAuth）
+- 預設輸出 **TXT、SRT、JSON**（VTT 為 opt-in）
 - 使用 `.env` 管理 whisper.cpp、輸出目錄、語言及模型設定
 - 使用 `setup.py check` 做唯讀環境檢查
 - 使用 `setup.py install` 編譯 whisper.cpp、下載模型並準備環境
@@ -130,6 +131,29 @@ ffmpeg -f avfoundation -list_devices true -i ""
 
 如果內建麥克風不是 `:0`，請依輸出結果調整 `MIC_DEVICE`。
 
+## Meeting workspace 與產物
+
+每次本機音訊或 Drive 流程成功後，會在 `MEETING_RECORDS_DIR`（或 CLI 指定的 `--output-root`）下建立：
+
+```text
+YYYY-MM-DD_HHMM_<safe-stem>/
+├── source_meta.json
+├── <safe-stem>.<ext>                 # 僅 managed 來源（Drive 下載）會保存音檔副本
+├── <safe-stem>_norm16k.wav           # normalize 開啟時
+├── <safe-stem>_transcription.txt
+├── <safe-stem>_transcription.srt
+└── <safe-stem>_transcription.json
+# + .vtt 僅在明確要求 VTT 時
+```
+
+來源 ownership：
+
+- **本機音訊（local reference）**：不複製、不移動原始檔；Core 直接讀取原路徑；`retained_in_workspace=false`
+- **公開 Drive 下載（managed download）**：下載後安全寫入 workspace，原始音檔與 raw transcript 會保留；`retained_in_workspace=true`
+- 輸出衝突採 **fail closed**：既有 audio／artifacts 不會被覆寫
+
+預設 artifacts 為 TXT + SRT + JSON；VTT 需額外加入（例如 `--outputs txt,srt,json,vtt`）。
+
 ## 使用方式
 
 ### 即時錄音並在結束後轉錄
@@ -140,14 +164,17 @@ ffmpeg -f avfoundation -list_devices true -i ""
 
 按 `Ctrl+C` 停止錄音，腳本會接著執行轉錄。
 
-輸出至 `MEETING_RECORDS_DIR`：
+此腳本**尚未**遷移到 Output Manager meeting workspace。目前仍直接寫入 `MEETING_RECORDS_DIR` 扁平檔名：
 
-- `meeting_YYYYMMDD_HHMMSS.wav`
-- `meeting_YYYYMMDD_HHMMSS.txt`
-- `meeting_YYYYMMDD_HHMMSS.srt`
-- `ffmpeg_YYYYMMDD_HHMMSS.log`
+```text
+MEETING_RECORDS_DIR/
+├── meeting_YYYYMMDD_HHMMSS.wav
+├── meeting_YYYYMMDD_HHMMSS.txt
+├── meeting_YYYYMMDD_HHMMSS.srt
+└── ffmpeg_YYYYMMDD_HHMMSS.log
+```
 
-### 轉錄既有音訊
+### 轉錄既有本機音訊
 
 ```bash
 ./scripts/transcribe-english.sh
@@ -155,35 +182,63 @@ ffmpeg -f avfoundation -list_devices true -i ""
 
 依提示輸入或拖入音訊路徑。雖然檔名仍保留舊名稱 `transcribe-english.sh`，目前程式已使用多語言模型，預設以中文為主要語言。
 
-腳本會先檢查錄音檔名中的日期時間。若檔名沒有
-`YYYY-MM-DD_HHMM` 前綴，會依序嘗試音訊 metadata、macOS 檔案建立時間、
-檔案修改時間，並讓你確認或輸入正確的錄製時間。
+腳本會先確認會議時間（檔名中的 `YYYY-MM-DD_HHMM`、metadata、檔案時間或手動輸入），再透過 Output Manager 建立 meeting workspace。
 
-原始錄音不會被移動或改名。腳本會在 `MEETING_RECORDS_DIR` 下建立
-`YYYY-MM-DD_HHMM` 會議資料夾，複製一份加上標準時間前綴的音訊，並將
-同次轉錄的所有產物寫入該資料夾。例如：
+**原始錄音不會被複製、移動或改名。** Core 以 reference 方式讀取原檔；資料夾名稱含時間前綴，artifact 檔名使用 `<safe-stem>`（不再重複加時間前綴）：
 
 ```text
 MeetingRecords/
-└── 2026-07-17_1500/
-    ├── 2026-07-17_1500_原始檔名.m4a
-    ├── 2026-07-17_1500_原始檔名_norm16k.wav
-    ├── 2026-07-17_1500_原始檔名_transcription.txt
-    ├── 2026-07-17_1500_原始檔名_transcription.srt
-    ├── 2026-07-17_1500_原始檔名_transcription.vtt
-    └── 2026-07-17_1500_原始檔名_transcription.json
+└── 2026-07-17_1500_<safe-stem>/
+    ├── source_meta.json
+    ├── <safe-stem>_norm16k.wav
+    ├── <safe-stem>_transcription.txt
+    ├── <safe-stem>_transcription.srt
+    └── <safe-stem>_transcription.json
 ```
 
-若輸入檔已具有標準前綴，腳本不會重複加入日期時間。若輸出產物已存在，
-腳本會停止而不是靜默覆蓋。
+若輸出產物已存在，腳本會停止而不是靜默覆蓋。
 
-每次轉錄會產生：
+### 公開 Google Drive 連結（Phase 1 CLI）
 
-- `檔名_norm16k.wav`
-- `檔名_transcription.txt`
-- `檔名_transcription.srt`
-- `檔名_transcription.vtt`
-- `檔名_transcription.json`
+僅支援 **公開** sharing link（不做 Google OAuth）。下載失敗會 bounded retry 後停止，且不會啟動轉錄。
+
+```bash
+PYTHONPATH=. python3 -m src.workflow \
+  "https://drive.google.com/file/d/<FILE_ID>/view?usp=sharing" \
+  --output-root "$HOME/MeetingRecords" \
+  --language zh \
+  --model small \
+  --model-path "$HOME/whisper.cpp/models/ggml-small.bin" \
+  --whisper-cli "$HOME/whisper.cpp/build/bin/whisper-cli" \
+  --threads 8
+```
+
+也可用 `--url` 代替 positional URL。成功時 stdout 會列出 workspace、raw audio、raw transcript 與各 artifact 路徑；進度與錯誤寫入 stderr。
+
+機器可讀輸出（stdout 僅最終 JSON；進度仍在 stderr）：
+
+```bash
+PYTHONPATH=. python3 -m src.workflow \
+  --url "https://drive.google.com/file/d/<FILE_ID>/view" \
+  --output-root "$HOME/MeetingRecords" \
+  --language zh \
+  --model small \
+  --model-path "$HOME/whisper.cpp/models/ggml-small.bin" \
+  --whisper-cli "$HOME/whisper.cpp/build/bin/whisper-cli" \
+  --threads 8 \
+  --json
+```
+
+成功 JSON 含 `ok`、`workspace_dir`、`raw_audio_path`、`raw_transcript_path`、`artifacts` 等欄位；失敗時 `ok=false` 並帶 `stage`／`message`，exit code 非 0。
+
+可選參數：
+
+- `--outputs txt,srt,json`（預設；可加 `vtt`；workflow 會確保保留 TXT）
+- `--meeting-time 2026-07-18T12:34:00+08:00`
+- `--no-normalize` / `--no-keep-normalized`
+- `--quiet-progress`
+
+此流程需要可連線下載公開 Drive 檔案，並使用本機 whisper 模型；離線 CI 以 fake downloader／fake core 覆蓋，端到端真人驗證請在本機對公開測試檔執行上述命令。
 
 ### 轉錄已切割的音訊片段
 
@@ -193,7 +248,7 @@ MeetingRecords/
 ./scripts/multi-lang.sh /path/to/segments_folder
 ```
 
-結果會寫入該資料夾下的 `transcripts/`。
+結果會寫入該資料夾下的 `transcripts/`。此 batch 流程尚未遷移到新的 meeting workspace manager（不在 Phase 1 範圍）。
 
 ## 疑難排解
 
@@ -235,6 +290,16 @@ python3 setup.py install
 - 使用 FFmpeg 列出裝置並修正 `.env` 中的 `MIC_DEVICE`
 - 查看 `MEETING_RECORDS_DIR` 中對應的 `ffmpeg_*.log`
 
+### Drive 下載失敗
+
+- 確認連結為公開分享（anyone with the link）
+- 檢查 stderr 的 `stage=download` 訊息（permission／404／timeout／HTML）
+- 網路失敗會 bounded retry；失敗後不會開始轉錄，也不會覆寫既有 meeting 資料
+
+### 輸出衝突
+
+若同名 workspace／artifact 已存在，流程會 fail closed 並回報 `workspace` 或 core 的 conflict stage，不會覆寫既有 raw audio／transcript。
+
 ## 測試
 
 離線 regression tests（不使用網路、麥克風、真實模型、剪貼簿或 Finder）：
@@ -242,6 +307,8 @@ python3 setup.py install
 ```bash
 bash tests/run_tests.sh
 ```
+
+涵蓋 Output Manager、Drive downloader、Phase 1 workflow／CLI、transcription core，以及既有 shell wrapper 行為。
 
 ## 專案結構
 
@@ -251,20 +318,22 @@ whisper-script/
 ├── README.md
 ├── env_loader.py
 ├── setup.py
-├── cli.py
+├── cli.py                      # legacy entry (not Phase 1 Drive CLI)
 ├── scripts/
 │   ├── lib/common.sh
 │   ├── organize_recording.py
 │   ├── record-meeting.sh
-│   ├── transcribe-english.sh
+│   ├── transcribe-english.sh   # local audio → workspace → core
 │   └── multi-lang.sh
 ├── tests/
-│   ├── run_tests.sh
-│   └── test_organize_recording.py
+│   └── run_tests.sh
 ├── pipelines/
-│   └── multilang_batch.py
+│   └── multilang_batch.py      # not migrated in Phase 1
 └── src/
-    ├── transcription/          # reusable local single-file transcription core
+    ├── drive/                  # public Drive URL adapter + downloader
+    ├── output_manager/         # meeting workspace + ownership policy
+    ├── workflow/               # Phase 1 Drive→workspace→transcribe + CLI
+    ├── transcription/          # reusable local single-file core
     ├── preprocessing/
     │   └── audio_splitter.py
     └── postprocessing/
