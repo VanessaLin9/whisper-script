@@ -5,11 +5,21 @@ set -euo pipefail
 input=""
 output_base=""
 prev=""
+want_txt=0
+want_srt=0
+want_vtt=0
+want_json=0
 
 for arg in "$@"; do
     case "$prev" in
         -f) input="$arg" ;;
         --output-file) output_base="$arg" ;;
+    esac
+    case "$arg" in
+        --output-txt) want_txt=1 ;;
+        --output-srt) want_srt=1 ;;
+        --output-vtt) want_vtt=1 ;;
+        --output-json) want_json=1 ;;
     esac
     prev="$arg"
 done
@@ -33,9 +43,24 @@ if [ -n "${FAIL_SEGMENTS:-}" ]; then
     esac
 fi
 
+# Legacy callers (record-meeting / multi-lang) omit --output-* flags; keep
+# writing the historical txt+srt pair unless newer flags are present.
+if [ "$want_txt$want_srt$want_vtt$want_json" = "0000" ]; then
+    want_txt=1
+    want_srt=1
+fi
+
 mkdir -p "$(dirname "$output_base")"
-echo "transcript for ${base_name}" >"${output_base}.txt"
-echo "1" >"${output_base}.srt"
-echo "WEBVTT" >"${output_base}.vtt"
-echo "{}" >"${output_base}.json"
+if [ "$want_txt" = "1" ]; then
+    echo "transcript for ${base_name}" >"${output_base}.txt"
+fi
+if [ "$want_srt" = "1" ]; then
+    echo "1" >"${output_base}.srt"
+fi
+if [ "$want_vtt" = "1" ]; then
+    echo "WEBVTT" >"${output_base}.vtt"
+fi
+if [ "$want_json" = "1" ]; then
+    echo "{}" >"${output_base}.json"
+fi
 exit 0

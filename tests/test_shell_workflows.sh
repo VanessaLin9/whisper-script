@@ -108,7 +108,7 @@ EOF
 
 clone_project() {
     local dest="$1"
-    mkdir -p "${dest}/scripts/lib" "${dest}/src/transcription"
+    mkdir -p "${dest}/scripts/lib" "${dest}/src/transcription" "${dest}/src/output_manager"
     cp "${ROOT}/env_loader.py" "${dest}/"
     cp "${ROOT}/scripts/lib/common.sh" "${dest}/scripts/lib/"
     cp "${ROOT}/scripts/organize_recording.py" "${dest}/scripts/"
@@ -116,6 +116,7 @@ clone_project() {
     cp "${ROOT}/scripts/record-meeting.sh" "${dest}/scripts/"
     cp "${ROOT}/scripts/transcribe-english.sh" "${dest}/scripts/"
     cp "${ROOT}/src/transcription/"*.py "${dest}/src/transcription/"
+    cp "${ROOT}/src/output_manager/"*.py "${dest}/src/output_manager/"
     chmod +x "${dest}/scripts/"*.sh "${dest}/scripts/lib/common.sh"
 }
 
@@ -426,8 +427,9 @@ assert_eq "bash -n multi-lang.sh" "0" "$?"
 bash -n "${ROOT}/scripts/lib/common.sh"
 assert_eq "bash -n common.sh" "0" "$?"
 python3 -m py_compile "${ROOT}/env_loader.py" "${ROOT}/setup.py" \
-  "${ROOT}/src/transcription/cli.py" "${ROOT}/src/transcription/core.py"
-assert_eq "python compile env_loader/setup/transcription" "0" "$?"
+  "${ROOT}/src/transcription/cli.py" "${ROOT}/src/transcription/core.py" \
+  "${ROOT}/src/output_manager/workspace.py" "${ROOT}/src/output_manager/artifacts_policy.py"
+assert_eq "python compile env_loader/setup/transcription/output_manager" "0" "$?"
 set -e
 
 echo

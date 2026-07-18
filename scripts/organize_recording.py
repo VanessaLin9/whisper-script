@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Prepare an existing recording for transcription.
+"""Prepare a local recording for transcription via the Output Manager.
 
-The source recording is preserved. A timestamped copy is placed in a
-per-meeting directory and the resulting paths are returned as JSON.
+Interactive time confirmation stays here (stderr). Local sources are referenced
+in place — they are never copied into the meeting workspace.
 """
 
 from __future__ import annotations
@@ -10,13 +10,20 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
+
+from src.output_manager import (
+    SourceDescriptor,
+    SourceKind,
+    WorkspaceError,
+    create_workspace,
+    plan_workspace,
+)
 
 
 STANDARD_PREFIX = re.compile(
@@ -122,22 +129,6 @@ def ask_for_recording_time(detected: RecordingTime) -> RecordingTime:
     return RecordingTime(replacement, "user input", False)
 
 
-def unique_destination(target: Path, source: Path) -> Path:
-    if not target.exists():
-        return target
-    try:
-        if target.samefile(source):
-            return target
-    except OSError:
-        pass
-    index = 2
-    while True:
-        candidate = target.with_name(f"{target.stem}-{index:02d}{target.suffix}")
-        if not candidate.exists():
-            return candidate
-        index += 1
-
-
 def prepare_recording(
     audio_file: Path, records_dir: Path, assume_yes: bool = False
 ) -> dict[str, str]:
@@ -155,25 +146,22 @@ def prepare_recording(
             file=sys.stderr,
         )
 
-    timestamp = detected.value.strftime("%Y-%m-%d_%H%M")
-    meeting_dir = records_dir / timestamp
-    meeting_dir.mkdir(parents=True, exist_ok=True)
-
-    if parse_standard_prefix(audio_file.stem):
-        standard_name = audio_file.name
-    else:
-        standard_name = f"{timestamp}_{audio_file.name}"
-
-    destination = unique_destination(meeting_dir / standard_name, audio_file)
-    if destination != audio_file:
-        shutil.copy2(audio_file, destination)
+    source = SourceDescriptor(
+        kind=SourceKind.LOCAL_REFERENCE,
+        path=audio_file,
+        original_name=audio_file.name,
+    )
+    plan = plan_workspace(records_dir, source, detected.value)
+    workspace = create_workspace(plan)
 
     return {
-        "meeting_dir": str(meeting_dir),
-        "audio_file": str(destination),
-        "stem": destination.stem,
+        "meeting_dir": str(workspace.workspace_dir),
+        "audio_file": str(workspace.audio_path),
+        "stem": workspace.transcript_stem,
         "recorded_at": detected.value.isoformat(timespec="minutes"),
         "date_source": detected.source,
+        "source_kind": workspace.source_kind.value,
+        "source_original_path": str(workspace.source_original_path),
     }
 
 
@@ -185,7 +173,7 @@ def main() -> int:
     args = parser.parse_args()
     try:
         result = prepare_recording(args.audio_file, args.records_dir, args.yes)
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, WorkspaceError) as exc:
         print(f"[!] {exc}", file=sys.stderr)
         return 1
     print(json.dumps(result, ensure_ascii=False))
