@@ -164,7 +164,15 @@ YYYY-MM-DD_HHMM_<safe-stem>/
 
 按 `Ctrl+C` 停止錄音，腳本會接著執行轉錄。
 
-輸出至 `MEETING_RECORDS_DIR`（錄音檔與對應 log；轉錄產物依腳本流程寫入 meeting workspace）。
+此腳本**尚未**遷移到 Output Manager meeting workspace。目前仍直接寫入 `MEETING_RECORDS_DIR` 扁平檔名：
+
+```text
+MEETING_RECORDS_DIR/
+├── meeting_YYYYMMDD_HHMMSS.wav
+├── meeting_YYYYMMDD_HHMMSS.txt
+├── meeting_YYYYMMDD_HHMMSS.srt
+└── ffmpeg_YYYYMMDD_HHMMSS.log
+```
 
 ### 轉錄既有本機音訊
 
@@ -176,16 +184,16 @@ YYYY-MM-DD_HHMM_<safe-stem>/
 
 腳本會先確認會議時間（檔名中的 `YYYY-MM-DD_HHMM`、metadata、檔案時間或手動輸入），再透過 Output Manager 建立 meeting workspace。
 
-**原始錄音不會被複製、移動或改名。** Core 以 reference 方式讀取原檔，產物寫入：
+**原始錄音不會被複製、移動或改名。** Core 以 reference 方式讀取原檔；資料夾名稱含時間前綴，artifact 檔名使用 `<safe-stem>`（不再重複加時間前綴）：
 
 ```text
 MeetingRecords/
 └── 2026-07-17_1500_<safe-stem>/
     ├── source_meta.json
-    ├── 2026-07-17_1500_<safe-stem>_norm16k.wav
-    ├── 2026-07-17_1500_<safe-stem>_transcription.txt
-    ├── 2026-07-17_1500_<safe-stem>_transcription.srt
-    └── 2026-07-17_1500_<safe-stem>_transcription.json
+    ├── <safe-stem>_norm16k.wav
+    ├── <safe-stem>_transcription.txt
+    ├── <safe-stem>_transcription.srt
+    └── <safe-stem>_transcription.json
 ```
 
 若輸出產物已存在，腳本會停止而不是靜默覆蓋。

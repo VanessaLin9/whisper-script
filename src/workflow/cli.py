@@ -1,7 +1,8 @@
 """Phase 1 CLI: public Google Drive link → workspace → local transcription.
 
-Progress / diagnostics always go to stderr. With ``--json``, the final
-machine-readable result (success or failure) is written to stdout only.
+Progress / diagnostics always go to stderr. With ``--json``, every terminal
+result (including argument validation failures) is exactly one JSON object on
+stdout.
 """
 
 from __future__ import annotations
@@ -23,6 +24,28 @@ from .types import (
     WorkflowProgressEvent,
     WorkflowStage,
 )
+
+CLI_STAGE = "cli"
+
+
+class _ArgumentParser(argparse.ArgumentParser):
+    """ArgumentParser that can emit JSON validation errors on stdout."""
+
+    def __init__(self, *args: object, json_mode: bool = False, **kwargs: object) -> None:
+        self.json_mode = json_mode
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+
+    def error(self, message: str) -> None:  # type: ignore[override]
+        self.print_usage(sys.stderr)
+        print(f"{self.prog}: error: {message}", file=sys.stderr)
+        if self.json_mode:
+            print(
+                json.dumps(
+                    {"ok": False, "stage": CLI_STAGE, "message": message},
+                    ensure_ascii=False,
+                )
+            )
+        self.exit(2)
 
 
 def _parse_outputs(raw: str) -> frozenset[ArtifactKind]:
@@ -57,12 +80,13 @@ def _parse_meeting_time(raw: str) -> datetime:
     return value
 
 
-def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(
+def build_parser(*, json_mode: bool = False) -> _ArgumentParser:
+    parser = _ArgumentParser(
         description=(
             "Transcribe a public Google Drive audio link into a meeting workspace "
             "(no GUI / OAuth)"
         ),
+        json_mode=json_mode,
     )
     parser.add_argument(
         "drive_url",
@@ -122,11 +146,15 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def request_from_args(args: argparse.Namespace) -> DriveTranscribeRequest:
-    url = args.drive_url_opt or args.drive_url
-    if not url or not str(url).strip():
+    positional = (args.drive_url or "").strip()
+    optional = (args.drive_url_opt or "").strip()
+    if positional and optional and positional != optional:
+        raise ValueError("Conflicting Drive URL: positional and --url differ")
+    url = optional or positional
+    if not url:
         raise ValueError("Drive URL is required (positional or --url)")
     return DriveTranscribeRequest(
-        drive_url=str(url).strip(),
+        drive_url=url,
         output_root=args.output_root,
         language=args.language,
         model=args.model,
@@ -184,7 +212,7 @@ def _error_payload(exc: WorkflowError) -> dict[str, object]:
 
 
 def _print_human_success(result: DriveTranscribeResult) -> None:
-    print(f"[*] Drive transcription OK")
+    print("[*] Drive transcription OK")
     print(f"    workspace: {result.workspace_dir}")
     print(f"    raw_audio: {result.raw_audio_path}")
     print(f"    raw_transcript: {result.raw_transcript_path}")
@@ -199,8 +227,12 @@ def main(
     *,
     workflow: DriveTranscribeWorkflow | None = None,
 ) -> int:
-    parser = build_parser()
-    args = parser.parse_args(argv)
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    json_mode = "--json" in argv_list
+    parser = build_parser(json_mode=json_mode)
+    args = parser.parse_args(argv_list)
+    # Keep parser JSON mode aligned even if flag order was unusual.
+    parser.json_mode = bool(args.json)
     try:
         request = request_from_args(args)
     except ValueError as exc:
