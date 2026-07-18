@@ -264,6 +264,7 @@ whisper-script/
 ├── pipelines/
 │   └── multilang_batch.py
 └── src/
+    ├── transcription/          # reusable local single-file transcription core
     ├── preprocessing/
     │   └── audio_splitter.py
     └── postprocessing/
