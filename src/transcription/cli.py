@@ -111,7 +111,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"    subprocess exit: {exc.exit_code}", file=sys.stderr)
         return 1
 
-    print(f"[*] Transcription OK: {result.output_dir / (result.stem + '_transcription.txt')}")
+    print(f"[*] Transcription OK: {result.output_dir}")
+    for kind in sorted(result.artifacts, key=lambda item: item.value):
+        print(f"    {kind.value}: {result.artifacts[kind]}")
     return 0
 
 
