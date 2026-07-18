@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
@@ -179,7 +181,7 @@ class ManagedSourceTests(unittest.TestCase):
                 raise OSError("disk full")
 
             with patch(
-                "src.output_manager.workspace.atomic_write_text",
+                "src.output_manager.workspace.exclusive_write_text",
                 side_effect=partial_metadata,
             ):
                 with self.assertRaises(WorkspaceError) as ctx:
@@ -292,6 +294,52 @@ class MissingSourceTests(unittest.TestCase):
             with self.assertRaises(WorkspaceError) as ctx:
                 create_workspace(plan)
             self.assertEqual(ctx.exception.stage, WorkspaceStage.VALIDATE)
+
+
+class RaceTests(unittest.TestCase):
+    def test_concurrent_create_one_wins_other_conflicts(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            downloaded = root / "tmp-download.m4a"
+            downloaded.write_bytes(b"drive-bytes")
+            plan = plan_workspace(
+                root / "records",
+                SourceDescriptor(SourceKind.MANAGED_DOWNLOAD, downloaded),
+                datetime(2026, 7, 17, 15, 0),
+            )
+            start = threading.Barrier(2)
+            outcomes: list[tuple[str, object]] = []
+            lock = threading.Lock()
+
+            def worker() -> None:
+                start.wait()
+                try:
+                    workspace = create_workspace(plan)
+                    meta = workspace.metadata_path.read_text(encoding="utf-8")
+                    audio = workspace.audio_path.read_bytes()
+                    with lock:
+                        outcomes.append(("ok", (meta, audio)))
+                except WorkspaceError as exc:
+                    with lock:
+                        outcomes.append(("err", exc.stage))
+
+            with ThreadPoolExecutor(max_workers=2) as pool:
+                futures = [pool.submit(worker), pool.submit(worker)]
+                for future in futures:
+                    future.result()
+
+            oks = [item for item in outcomes if item[0] == "ok"]
+            errs = [item for item in outcomes if item[0] == "err"]
+            self.assertEqual(len(oks), 1, outcomes)
+            self.assertEqual(len(errs), 1, outcomes)
+            self.assertEqual(errs[0][1], WorkspaceStage.CHECK_CONFLICTS)
+
+            winner_meta, winner_audio = oks[0][1]  # type: ignore[misc]
+            assert plan.managed_audio_path is not None
+            self.assertEqual(plan.managed_audio_path.read_bytes(), winner_audio)
+            self.assertEqual(plan.metadata_path.read_text(encoding="utf-8"), winner_meta)
+            self.assertEqual(downloaded.read_bytes(), b"drive-bytes")
+            self.assertFalse((plan.workspace_dir / ".create.lock").exists())
 
 
 if __name__ == "__main__":

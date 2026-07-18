@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -27,6 +28,8 @@ from .types import (
     WorkspacePlan,
     WorkspaceStage,
 )
+
+_CREATE_LOCK_NAME = ".create.lock"
 
 
 def _display_name(source: SourceDescriptor) -> str:
@@ -148,10 +151,6 @@ def assert_no_plan_conflicts(plan: WorkspacePlan) -> None:
         )
 
 
-def _temp_sibling(path: Path) -> Path:
-    return path.with_name(f".{path.name}.tmp-{os.getpid()}")
-
-
 def _cleanup_path(path: Path | None) -> None:
     if path is None:
         return
@@ -161,26 +160,104 @@ def _cleanup_path(path: Path | None) -> None:
         pass
 
 
-def atomic_write_text(path: Path, text: str) -> None:
-    """Write ``path`` via a same-directory temp file and ``os.replace``."""
-    tmp = _temp_sibling(path)
+def _unique_temp_sibling(path: Path) -> Path:
+    return path.with_name(f".{path.name}.tmp-{os.getpid()}-{uuid.uuid4().hex}")
+
+
+class _WorkspaceCreateLock:
+    """Per-workspace exclusive create lock (``O_CREAT|O_EXCL``)."""
+
+    def __init__(self, workspace_dir: Path) -> None:
+        self.path = workspace_dir / _CREATE_LOCK_NAME
+        self._fd: int | None = None
+
+    def acquire(self) -> None:
+        try:
+            self._fd = os.open(
+                self.path,
+                os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+            )
+        except FileExistsError as exc:
+            raise WorkspaceError(
+                WorkspaceStage.CHECK_CONFLICTS,
+                f"Workspace create already in progress or completed: {self.path}",
+                cause=exc,
+            ) from exc
+        try:
+            os.write(self._fd, f"{os.getpid()}\n".encode("utf-8"))
+        except OSError:
+            self.release()
+            raise
+
+    def release(self) -> None:
+        if self._fd is None:
+            return
+        try:
+            os.close(self._fd)
+        finally:
+            self._fd = None
+            # Only the acquirer created this path via O_EXCL.
+            _cleanup_path(self.path)
+
+
+def exclusive_write_text(path: Path, text: str) -> None:
+    """Create ``path`` only if missing; never overwrite an existing file."""
+    data = text.encode("utf-8")
     try:
-        tmp.write_text(text, encoding="utf-8")
-        os.replace(tmp, path)
+        fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as exc:
+        raise WorkspaceError(
+            WorkspaceStage.CHECK_CONFLICTS,
+            f"Workspace outputs already exist; refusing to overwrite: {path}",
+            cause=exc,
+        ) from exc
+    try:
+        os.write(fd, data)
     except Exception:
-        _cleanup_path(tmp)
+        os.close(fd)
+        _cleanup_path(path)
         raise
+    os.close(fd)
 
 
-def atomic_copy_file(source: Path, destination: Path) -> None:
-    """Copy ``source`` to ``destination`` atomically (temp + replace)."""
-    tmp = _temp_sibling(destination)
+def exclusive_copy_file(source: Path, destination: Path) -> None:
+    """Copy ``source`` into a new ``destination`` without clobbering."""
+    tmp: Path | None = _unique_temp_sibling(destination)
     try:
+        assert tmp is not None
         shutil.copy2(source, tmp)
-        os.replace(tmp, destination)
-    except Exception:
-        _cleanup_path(tmp)
+        try:
+            os.link(tmp, destination)
+        except FileExistsError as exc:
+            raise WorkspaceError(
+                WorkspaceStage.CHECK_CONFLICTS,
+                f"Workspace outputs already exist; refusing to overwrite: {destination}",
+                cause=exc,
+            ) from exc
+        except OSError:
+            try:
+                fd = os.open(destination, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            except FileExistsError as exc:
+                raise WorkspaceError(
+                    WorkspaceStage.CHECK_CONFLICTS,
+                    f"Workspace outputs already exist; refusing to overwrite: {destination}",
+                    cause=exc,
+                ) from exc
+            os.close(fd)
+            os.replace(tmp, destination)
+            tmp = None
+    except WorkspaceError:
         raise
+    except OSError:
+        _cleanup_path(destination)
+        raise
+    finally:
+        _cleanup_path(tmp)
+
+
+# Back-compat aliases for tests/callers.
+atomic_write_text = exclusive_write_text
+atomic_copy_file = exclusive_copy_file
 
 
 def _write_metadata(plan: WorkspacePlan, audio_path: Path) -> None:
@@ -195,11 +272,14 @@ def _write_metadata(plan: WorkspacePlan, audio_path: Path) -> None:
         "retained_in_workspace": retained_in_workspace(plan.workspace_dir, audio_path),
     }
     try:
-        atomic_write_text(
+        exclusive_write_text(
             plan.metadata_path,
             json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
         )
+    except WorkspaceError:
+        raise
     except OSError as exc:
+        _cleanup_path(plan.metadata_path)
         raise WorkspaceError(
             WorkspaceStage.WRITE_METADATA,
             f"Failed to write workspace metadata: {plan.metadata_path}",
@@ -211,8 +291,11 @@ def _persist_managed_download(plan: WorkspacePlan, source_path: Path) -> Path:
     assert plan.managed_audio_path is not None
     destination = plan.managed_audio_path
     try:
-        atomic_copy_file(source_path, destination)
+        exclusive_copy_file(source_path, destination)
+    except WorkspaceError:
+        raise
     except OSError as exc:
+        _cleanup_path(destination)
         raise WorkspaceError(
             WorkspaceStage.PERSIST_SOURCE,
             f"Failed to persist managed source into workspace: {destination}",
@@ -261,12 +344,14 @@ def create_workspace(plan: WorkspacePlan) -> MeetingWorkspace:
             cause=exc,
         ) from exc
 
-    # Re-check after mkdir in case another writer raced in.
-    assert_no_plan_conflicts(plan)
-
-    audio_path = plan.audio_path_for_core
+    lock = _WorkspaceCreateLock(plan.workspace_dir)
+    lock.acquire()
     created_paths: list[Path] = []
+    audio_path = plan.audio_path_for_core
     try:
+        # Re-check under the exclusive lock before any publish.
+        assert_no_plan_conflicts(plan)
+
         if plan.source.kind == SourceKind.MANAGED_DOWNLOAD:
             audio_path = _persist_managed_download(plan, source_path)
             created_paths.append(audio_path)
@@ -278,14 +363,12 @@ def create_workspace(plan: WorkspacePlan) -> MeetingWorkspace:
         _write_metadata(plan, audio_path)
         created_paths.append(plan.metadata_path)
     except WorkspaceError:
+        # Only remove paths this invocation successfully published.
         for path in reversed(created_paths):
             _cleanup_path(path)
-        # Always clear destinations this invocation may have partially written,
-        # even if they were never recorded in created_paths.
-        _cleanup_path(plan.metadata_path)
-        if plan.managed_audio_path is not None:
-            _cleanup_path(plan.managed_audio_path)
         raise
+    finally:
+        lock.release()
 
     return MeetingWorkspace(
         plan=plan,
