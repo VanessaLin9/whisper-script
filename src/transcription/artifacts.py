@@ -34,8 +34,19 @@ def normalized_audio_path(request: TranscribeRequest) -> Path:
     return request.output_dir / f"{request.stem}_norm16k.wav"
 
 
+def resolved_artifact_basename(request: TranscribeRequest) -> str:
+    """Return the whisper ``--output-file`` basename for this request.
+
+    Default callers keep ``{stem}_transcription``. Compatibility callers may set
+    ``artifact_basename`` to a single safe filename component (validated later).
+    """
+    if request.artifact_basename is None:
+        return f"{request.stem}_transcription"
+    return request.artifact_basename
+
+
 def output_base(request: TranscribeRequest) -> Path:
-    return request.output_dir / f"{request.stem}_transcription"
+    return request.output_dir / resolved_artifact_basename(request)
 
 
 def artifact_path(request: TranscribeRequest, kind: ArtifactKind) -> Path:
@@ -57,6 +68,8 @@ def conflict_candidates(request: TranscribeRequest) -> list[Path]:
 def assert_outputs_within_output_dir(request: TranscribeRequest) -> None:
     """Ensure every planned output resolves under ``output_dir``."""
     assert_safe_stem(request.stem)
+    if request.artifact_basename is not None:
+        assert_safe_stem(request.artifact_basename)
     root = request.output_dir.expanduser().resolve()
     for path in conflict_candidates(request):
         resolved = path.expanduser().resolve()

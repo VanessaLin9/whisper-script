@@ -164,7 +164,7 @@ YYYY-MM-DD_HHMM_<safe-stem>/
 
 按 `Ctrl+C` 停止錄音，腳本會接著執行轉錄。
 
-此腳本**尚未**遷移到 Output Manager meeting workspace。目前仍直接寫入 `MEETING_RECORDS_DIR` 扁平檔名：
+麥克風擷取與 Ctrl+C 仍由 shell 負責；轉錄已委派給共用 `src.transcription` core（TXT + SRT，錄音已是 mono 16 kHz，不再二次 normalize）。此腳本**尚未**遷移到 Output Manager meeting workspace，仍寫入 `MEETING_RECORDS_DIR` 扁平 legacy 檔名：
 
 ```text
 MEETING_RECORDS_DIR/
@@ -248,7 +248,7 @@ PYTHONPATH=. python3 -m src.workflow \
 ./scripts/multi-lang.sh /path/to/segments_folder
 ```
 
-結果會寫入該資料夾下的 `transcripts/`。此 batch 流程尚未遷移到新的 meeting workspace manager（不在 Phase 1 範圍）。
+結果會寫入該資料夾下的 `transcripts/`（legacy `segment_NNN.txt/.srt`）。逐段轉錄已委派給共用 `src.transcription` core（TXT + SRT、不做二次 normalize）；segment 發現／排序、partial success 與 `failed_segments.log` 仍由 shell 負責。此流程尚未改用 meeting workspace。
 
 ## 疑難排解
 

@@ -17,5 +17,6 @@ PYTHONPATH="$ROOT" python3 tests/test_drive_workflow.py -v
 PYTHONPATH="$ROOT" python3 tests/test_drive_workflow_cli.py -v
 PYTHONPATH="$ROOT" python3 tests/test_transcription_core.py -v
 PYTHONPATH="$ROOT" python3 tests/test_transcription_cli.py -v
+PYTHONPATH="$ROOT" python3 tests/test_subprocess_runner.py -v
 bash tests/test_shell_workflows.sh
 bash tests/test_transcribe_english_wrapper.sh

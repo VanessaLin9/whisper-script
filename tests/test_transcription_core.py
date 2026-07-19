@@ -17,6 +17,7 @@ from src.transcription import (
     TranscriptionError,
     transcribe,
 )
+from src.transcription.artifacts import output_base, resolved_artifact_basename
 from src.transcription.subprocess_runner import CommandResult
 from src.transcription.whisper import build_whisper_command
 
@@ -275,6 +276,64 @@ class TranscriptionCoreTests(unittest.TestCase):
         absolute_stem = str(self.root / "abs-stem")
         with self.assertRaises(TranscriptionError) as ctx:
             transcribe(self._request(stem=absolute_stem), runner=runner)
+
+        self.assertEqual(ctx.exception.stage, Stage.VALIDATE_INPUT)
+        self.assertEqual(runner.calls, [])
+        self.assertEqual(self.audio.read_bytes(), b"source-audio")
+
+    def test_default_artifact_basename_is_stem_transcription(self) -> None:
+        request = self._request()
+        self.assertIsNone(request.artifact_basename)
+        self.assertEqual(resolved_artifact_basename(request), "meeting_transcription")
+        self.assertEqual(output_base(request), self.output_dir / "meeting_transcription")
+
+        runner = FakeRunner()
+        result = transcribe(
+            self._request(outputs=frozenset({ArtifactKind.TXT, ArtifactKind.SRT})),
+            runner=runner,
+        )
+        self.assertEqual(
+            result.artifacts[ArtifactKind.TXT],
+            self.output_dir / "meeting_transcription.txt",
+        )
+        self.assertEqual(
+            _flag_value(runner.calls[-1], "--output-file"),
+            str(self.output_dir / "meeting_transcription"),
+        )
+
+    def test_legacy_artifact_basename_writes_without_transcription_suffix(self) -> None:
+        runner = FakeRunner()
+        result = transcribe(
+            self._request(
+                stem="meeting_20260719_120000",
+                artifact_basename="meeting_20260719_120000",
+                outputs=frozenset({ArtifactKind.TXT, ArtifactKind.SRT}),
+                normalize=False,
+            ),
+            runner=runner,
+        )
+
+        self.assertEqual(
+            result.artifacts[ArtifactKind.TXT],
+            self.output_dir / "meeting_20260719_120000.txt",
+        )
+        self.assertEqual(
+            result.artifacts[ArtifactKind.SRT],
+            self.output_dir / "meeting_20260719_120000.srt",
+        )
+        self.assertFalse((self.output_dir / "meeting_20260719_120000_transcription.txt").exists())
+        self.assertEqual(
+            _flag_value(runner.calls[-1], "--output-file"),
+            str(self.output_dir / "meeting_20260719_120000"),
+        )
+
+    def test_unsafe_artifact_basename_rejected_before_runner(self) -> None:
+        runner = FakeRunner()
+        with self.assertRaises(TranscriptionError) as ctx:
+            transcribe(
+                self._request(artifact_basename="../escape"),
+                runner=runner,
+            )
 
         self.assertEqual(ctx.exception.stage, Stage.VALIDATE_INPUT)
         self.assertEqual(runner.calls, [])
