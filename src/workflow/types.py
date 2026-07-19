@@ -72,3 +72,20 @@ class WorkflowError(Exception):
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return f"[{self.stage.value}] {self.message}"
+
+
+@dataclass
+class WorkflowCancelled(Exception):
+    """Typed cancelled terminal outcome with GUI-ready retention info."""
+
+    stage: WorkflowStage
+    message: str = "Operation cancelled"
+    workspace_dir: Path | None = None
+    raw_audio_path: Path | None = None
+    retained_paths: tuple[Path, ...] = ()
+    cleanup_detail: str | None = None
+    cause: BaseException | None = field(default=None, repr=False)
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        detail = f" ({self.cleanup_detail})" if self.cleanup_detail else ""
+        return f"[cancelled:{self.stage.value}] {self.message}{detail}"

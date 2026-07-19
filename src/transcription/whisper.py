@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from src.common import CancellationToken, OperationCancelled
+
 from .subprocess_runner import SubprocessRunner, bounded_tail
 from .types import ArtifactKind, Stage, TranscriptionError
 
@@ -55,6 +57,7 @@ def run_whisper(
     output_base: Path,
     outputs: frozenset[ArtifactKind],
     runner: SubprocessRunner,
+    cancellation: CancellationToken | None = None,
 ) -> None:
     command = build_whisper_command(
         whisper_cli=whisper_cli,
@@ -67,7 +70,13 @@ def run_whisper(
     )
     logger.info("transcribe stage starting: %s", output_base)
     try:
-        result = runner.run(command)
+        result = runner.run(
+            command,
+            cancellation=cancellation,
+            cancel_stage=Stage.TRANSCRIBE.value,
+        )
+    except OperationCancelled:
+        raise
     except TranscriptionError:
         raise
     except Exception as exc:

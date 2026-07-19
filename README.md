@@ -315,6 +315,8 @@ bash tests/run_tests.sh
 `src/common` 提供 thread-safe `CancellationController`／`CancellationToken` 與 typed `OperationCancelled`（獨立 terminal outcome，不是一般 failure）。
 `PublicDriveDownloader.download(..., cancellation=token)` 可選；未傳 token 時行為與既有 API 相同。取消會在 request／redirect／confirmation／retry／chunk 邊界檢查，並清除尚未 commit 的 partial temp（不會當成可重試的 network error）。
 
+Transcription core／subprocess runners 同樣接受 optional token：取消時對 child process 採 terminate → bounded wait → kill → reap（macOS 使用 process group），並清除本次 partial normalize／transcript artifacts，但永不刪除 source／已持久化的 raw audio。`DriveTranscribeWorkflow.run(..., cancellation=token)` 會把 token 傳到 download 與 core，並以 exactly one `WorkflowCancelled`（含 stage、workspace、retained paths）作為 terminal outcome；success 已提交後的 cancel 為 no-op。
+
 ## 專案結構
 
 ```text

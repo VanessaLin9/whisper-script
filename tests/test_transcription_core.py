@@ -37,8 +37,17 @@ class FakeRunner:
         if self.calls is None:
             self.calls = []
 
-    def run(self, command: Sequence[str], *, cwd: Path | None = None) -> CommandResult:
+    def run(
+        self,
+        command: Sequence[str],
+        *,
+        cwd: Path | None = None,
+        cancellation=None,
+        cancel_stage: str = "transcribe",
+    ) -> CommandResult:
         del cwd
+        if cancellation is not None:
+            cancellation.throw_if_cancelled(cancel_stage)
         argv = list(command)
         self.calls.append(argv)
         binary = Path(argv[0]).name

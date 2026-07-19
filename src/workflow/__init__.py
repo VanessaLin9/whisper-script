@@ -8,6 +8,7 @@ from .drive_transcribe import DriveTranscribeWorkflow
 from .types import (
     DriveTranscribeRequest,
     DriveTranscribeResult,
+    WorkflowCancelled,
     WorkflowError,
     WorkflowProgressEvent,
     WorkflowStage,
@@ -17,6 +18,7 @@ __all__ = [
     "DriveTranscribeRequest",
     "DriveTranscribeResult",
     "DriveTranscribeWorkflow",
+    "WorkflowCancelled",
     "WorkflowError",
     "WorkflowProgressEvent",
     "WorkflowStage",

@@ -40,8 +40,10 @@ class FakeDownloader:
         self._error = error
         self.calls: list[str] = []
 
-    def download(self, drive_url: str) -> DownloadResult:
+    def download(self, drive_url: str, *, cancellation=None) -> DownloadResult:
         self.calls.append(drive_url)
+        if cancellation is not None:
+            cancellation.throw_if_cancelled("download")
         if self._error is not None:
             raise self._error
         assert self._result is not None
@@ -76,7 +78,10 @@ def _fake_success_transcribe(
     request: TranscribeRequest,
     *,
     on_progress=None,
+    cancellation=None,
 ) -> TranscribeResult:
+    if cancellation is not None:
+        cancellation.throw_if_cancelled("transcribe")
     if on_progress is not None:
         on_progress(
             ProgressEvent(Stage.NORMALIZE, ProgressStatus.STARTED)
@@ -277,7 +282,8 @@ class DriveWorkflowTests(unittest.TestCase):
 
             events: list[WorkflowProgressEvent] = []
 
-            def fail_transcribe(request: TranscribeRequest, *, on_progress=None):
+            def fail_transcribe(request: TranscribeRequest, *, on_progress=None, cancellation=None):
+                del cancellation
                 if on_progress is not None:
                     on_progress(
                         ProgressEvent(Stage.TRANSCRIBE, ProgressStatus.STARTED)
@@ -434,7 +440,8 @@ class DriveWorkflowTests(unittest.TestCase):
             root = Path(tmp)
             audio_tmp = _write_temp_audio(root / "dl")
 
-            def boom(request: TranscribeRequest, *, on_progress=None):
+            def boom(request: TranscribeRequest, *, on_progress=None, cancellation=None):
+                del on_progress, cancellation
                 raise RuntimeError("core panicked")
 
             workflow = DriveTranscribeWorkflow(

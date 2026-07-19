@@ -90,11 +90,15 @@ EOF
 
 clone_project() {
     local dest="$1"
-    mkdir -p "${dest}/scripts/lib" "${dest}/src/transcription" "${dest}/src/output_manager"
+    mkdir -p "${dest}/scripts/lib" \
+        "${dest}/src/common" \
+        "${dest}/src/transcription" \
+        "${dest}/src/output_manager"
     cp "${ROOT}/env_loader.py" "${dest}/"
     cp "${ROOT}/scripts/lib/common.sh" "${dest}/scripts/lib/"
     cp "${ROOT}/scripts/organize_recording.py" "${dest}/scripts/"
     cp "${ROOT}/scripts/transcribe-english.sh" "${dest}/scripts/"
+    cp "${ROOT}/src/common/"*.py "${dest}/src/common/"
     cp "${ROOT}/src/transcription/"*.py "${dest}/src/transcription/"
     cp "${ROOT}/src/output_manager/"*.py "${dest}/src/output_manager/"
     chmod +x "${dest}/scripts/"*.sh "${dest}/scripts/lib/common.sh"
