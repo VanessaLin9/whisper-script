@@ -24,6 +24,7 @@ from src.transcription import (
     Stage,
     TranscribeRequest,
     TranscribeResult,
+    TranscriptionError,
     transcribe,
 )
 from src.transcription.subprocess_runner import (
@@ -517,6 +518,36 @@ class CoreCancellationTests(unittest.TestCase):
                 self.assertTrue(path.is_file())
             self.assertTrue(result.raw_audio_path.is_file())
 
+    def test_source_mutation_after_artifacts_cleans_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio = root / "a.wav"
+            audio.write_bytes(b"source")
+
+            class MutateSourceRunner(FakeRunner):
+                def run(self, command, *, cwd=None, cancellation=None, cancel_stage="transcribe"):
+                    argv = list(command)
+                    result = super().run(
+                        command,
+                        cwd=cwd,
+                        cancellation=cancellation,
+                        cancel_stage=cancel_stage,
+                    )
+                    if Path(argv[0]).name == "whisper-cli":
+                        audio.write_bytes(b"mutated-source")
+                    return result
+
+            with self.assertRaises(TranscriptionError) as ctx:
+                transcribe(
+                    self._request(root, normalize=False),
+                    runner=MutateSourceRunner(),
+                )
+            self.assertEqual(ctx.exception.stage, Stage.VALIDATE_ARTIFACTS)
+            self.assertIn("modified", ctx.exception.message)
+            out = root / "out"
+            self.assertEqual(list(out.glob("*_transcription.*")), [])
+            self.assertEqual(audio.read_bytes(), b"mutated-source")
+
 
 class WorkflowCancellationTests(unittest.TestCase):
     def test_download_cancel_no_workspace(self) -> None:
@@ -774,6 +805,45 @@ class WorkflowCancellationTests(unittest.TestCase):
             self.assertTrue(result.raw_transcript_path.is_file())
             for path in result.artifacts.values():
                 self.assertTrue(path.is_file())
+
+    def test_legacy_downloader_and_transcribe_signatures_without_cancellation(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            audio_tmp = root / "dl" / "meeting.m4a"
+            audio_tmp.parent.mkdir(parents=True)
+            audio_tmp.write_bytes(b"AUDIO")
+
+            class LegacyDownloader:
+                def __init__(self, result: DownloadResult) -> None:
+                    self._result = result
+                    self.calls: list[str] = []
+
+                def download(self, drive_url: str) -> DownloadResult:
+                    self.calls.append(drive_url)
+                    return self._result
+
+            def legacy_transcribe(request: TranscribeRequest, *, on_progress=None) -> TranscribeResult:
+                return _fake_success_transcribe(request, on_progress=on_progress)
+
+            downloader = LegacyDownloader(
+                DownloadResult(
+                    file_id="abc123XYZ_-99",
+                    temp_path=audio_tmp,
+                    filename="meeting.m4a",
+                    content_type="audio/mp4",
+                    size_bytes=5,
+                )
+            )
+            workflow = DriveTranscribeWorkflow(
+                downloader=downloader,  # type: ignore[arg-type]
+                transcribe_fn=legacy_transcribe,
+            )
+            result = workflow.run(_workflow_request(root / "out"))
+            self.assertEqual(
+                downloader.calls,
+                ["https://drive.google.com/file/d/abc123XYZ_-99/view"],
+            )
+            self.assertTrue(result.raw_transcript_path.is_file())
 
 
 if __name__ == "__main__":

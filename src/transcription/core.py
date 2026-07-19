@@ -166,12 +166,6 @@ def transcribe(
         _emit(on_progress, Stage.VALIDATE_ARTIFACTS, ProgressStatus.STARTED)
         artifacts = validate_requested_artifacts(request)
         _emit(on_progress, Stage.VALIDATE_ARTIFACTS, ProgressStatus.FINISHED)
-        # Artifacts are committed: later cancel is a no-op and must not delete them.
-        created_paths = [
-            path
-            for path in created_paths
-            if path.resolve() not in {item.resolve() for item in artifacts.values()}
-        ]
 
         if request.normalize and not request.keep_normalized and normalized_path is not None:
             active_stage = Stage.CLEANUP
@@ -188,6 +182,13 @@ def transcribe(
                 f"Source audio was modified during transcription: {audio_path}",
             )
 
+        # Commit only after every success invariant has passed. Later cancel is a
+        # no-op for these artifacts; failure cleanup above still removes them.
+        created_paths = [
+            path
+            for path in created_paths
+            if path.resolve() not in {item.resolve() for item in artifacts.values()}
+        ]
         return TranscribeResult(
             raw_audio_path=audio_path,
             normalized_audio_path=normalized_path,

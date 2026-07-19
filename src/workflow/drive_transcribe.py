@@ -165,10 +165,13 @@ class DriveTranscribeWorkflow:
         _emit(on_progress, WorkflowStage.DOWNLOAD, ProgressStatus.STARTED)
         try:
             _throw_if_cancelled(cancellation, WorkflowStage.DOWNLOAD)
-            download = self._downloader.download(
-                request.drive_url,
-                cancellation=cancellation,
-            )
+            if cancellation is None:
+                download = self._downloader.download(request.drive_url)
+            else:
+                download = self._downloader.download(
+                    request.drive_url,
+                    cancellation=cancellation,
+                )
         except OperationCancelled as exc:
             _cleanup_path(temp_download)
             _raise_cancelled(
@@ -303,11 +306,14 @@ class DriveTranscribeWorkflow:
             ffmpeg=request.ffmpeg,
         )
         try:
-            result = self._transcribe(
-                core_request,
-                on_progress=_core_progress,
-                cancellation=cancellation,
-            )
+            if cancellation is None:
+                result = self._transcribe(core_request, on_progress=_core_progress)
+            else:
+                result = self._transcribe(
+                    core_request,
+                    on_progress=_core_progress,
+                    cancellation=cancellation,
+                )
         except OperationCancelled as exc:
             retained: list[Path] = []
             if raw_audio_path is not None and raw_audio_path.exists():
