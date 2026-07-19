@@ -248,7 +248,7 @@ PYTHONPATH=. python3 -m src.workflow \
 ./scripts/multi-lang.sh /path/to/segments_folder
 ```
 
-結果會寫入該資料夾下的 `transcripts/`。此 batch 流程尚未遷移到新的 meeting workspace manager（不在 Phase 1 範圍）。
+結果會寫入該資料夾下的 `transcripts/`（legacy `segment_NNN.txt/.srt`）。逐段轉錄已委派給共用 `src.transcription` core（TXT + SRT、不做二次 normalize）；segment 發現／排序、partial success 與 `failed_segments.log` 仍由 shell 負責。此流程尚未改用 meeting workspace。
 
 ## 疑難排解
 

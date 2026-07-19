@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Batch transcribe pre-split audio segments using whisper.cpp.
+# Batch transcribe pre-split audio segments via the shared transcription core.
 # Usage: ./multi-lang.sh <segments_folder>
+#
+# Segment discovery, ordering, partial-success aggregation, and failure logging
+# stay in this shell. Per-segment transcription is delegated to
+# src.transcription (TXT + SRT, legacy segment_NNN basenames, no normalize).
 
 set -euo pipefail
 
@@ -87,15 +91,25 @@ for i in "${!SEGMENTS[@]}"; do
         "${OUT_BASE}.json" \
         "$SEGMENT_LOG"
 
+    # Core human/progress/streamed child output stays in the segment log so it
+    # cannot pollute batch control messages or the failure log.
     set +e
-    "$WHISPER_CLI" \
-        -m "$MODEL_FILE" \
-        -f "$SEGMENT" \
+    PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m src.transcription.cli \
+        --audio "$SEGMENT" \
+        --output-dir "$OUT_DIR" \
+        --stem "$SEGMENT_NAME" \
+        --artifact-basename "$SEGMENT_NAME" \
         --language "$DEFAULT_LANGUAGE" \
+        --model "$PREFERRED_MODEL" \
+        --model-path "$MODEL_FILE" \
+        --whisper-cli "$WHISPER_CLI" \
         --threads "$THREADS" \
-        --output-txt \
-        --output-srt \
-        --output-file "$OUT_BASE" >"$SEGMENT_LOG" 2>&1
+        --outputs "txt,srt" \
+        --no-normalize \
+        --quiet-progress \
+        --stream-subprocess \
+        --ffmpeg ffmpeg \
+        >"$SEGMENT_LOG" 2>&1
     STATUS=$?
     set -e
 

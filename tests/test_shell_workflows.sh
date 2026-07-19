@@ -244,6 +244,30 @@ set -e
 assert_eq "small + zh exits zero" "0" "$status"
 
 echo
+echo "== multi-lang.sh: zero segments fails closed =="
+ZERO="${TMP_ROOT}/batch_zero"
+mkdir -p "${ZERO}/segments"
+make_whisper_root "${ZERO}/whisper.cpp"
+clone_project "${ZERO}/project"
+write_env "${ZERO}/project/.env" "${ZERO}/whisper.cpp" "${ZERO}/records" "${ZERO}/transcripts"
+
+set +e
+out="$(PATH="${FAKE_BIN}:${PATH}" "${ZERO}/project/scripts/multi-lang.sh" "${ZERO}/segments" 2>&1)"
+status=$?
+set -e
+assert_eq "zero segments exit status" "1" "$status"
+assert_contains "zero segments message" "No segment files found" "$out"
+assert_not_contains "zero segments does not claim success" "All segments transcribed successfully" "$out"
+assert_contains "delegates to python core" "src.transcription.cli" "$(grep -n 'src.transcription.cli' "${ZERO}/project/scripts/multi-lang.sh" || true)"
+if ! grep -E '^[[:space:]]*"?\$\{?WHISPER_CLI\}?"?' "${ZERO}/project/scripts/multi-lang.sh" >/dev/null; then
+    echo "  PASS: multi-lang.sh does not exec whisper-cli directly"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: multi-lang.sh still appears to invoke whisper-cli directly"
+    FAIL=$((FAIL + 1))
+fi
+
+echo
 echo "== multi-lang.sh: all segments succeed =="
 OK_CASE="${TMP_ROOT}/batch_ok"
 mkdir -p "${OK_CASE}/segments"
@@ -252,6 +276,7 @@ clone_project "${OK_CASE}/project"
 write_env "${OK_CASE}/project/.env" "${OK_CASE}/whisper.cpp" "${OK_CASE}/records" "${OK_CASE}/transcripts"
 printf 'a' >"${OK_CASE}/segments/segment_001.wav"
 printf 'b' >"${OK_CASE}/segments/segment_002.wav"
+echo "old_failure" >"${OK_CASE}/segments/failed_segments.log"
 
 set +e
 out="$(PATH="${FAKE_BIN}:${PATH}" "${OK_CASE}/project/scripts/multi-lang.sh" "${OK_CASE}/segments" 2>&1)"
@@ -259,7 +284,12 @@ status=$?
 set -e
 assert_eq "batch success exit status" "0" "$status"
 assert_file "segment_001 transcript" "${OK_CASE}/segments/transcripts/segment_001.txt"
+assert_file "segment_001 srt" "${OK_CASE}/segments/transcripts/segment_001.srt"
 assert_file "segment_002 transcript" "${OK_CASE}/segments/transcripts/segment_002.txt"
+assert_file "segment_002 srt" "${OK_CASE}/segments/transcripts/segment_002.srt"
+assert_not_file "no _transcription suffix for batch" "${OK_CASE}/segments/transcripts/segment_001_transcription.txt"
+assert_not_file "no vtt by default" "${OK_CASE}/segments/transcripts/segment_001.vtt"
+assert_not_file "no json by default" "${OK_CASE}/segments/transcripts/segment_001.json"
 if [ ! -f "${OK_CASE}/segments/failed_segments.log" ]; then
     echo "  PASS: failure log removed on full success"
     PASS=$((PASS + 1))
@@ -267,6 +297,8 @@ else
     echo "  FAIL: failure log should be removed on full success"
     FAIL=$((FAIL + 1))
 fi
+assert_contains "full success message" "All segments transcribed successfully" "$out"
+assert_not_contains "core progress stays out of batch summary" "[core:" "$out"
 
 echo
 echo "== multi-lang.sh: partial failure keeps audio and fails the run =="
@@ -292,6 +324,8 @@ assert_eq "partial failure exit status" "1" "$status"
 assert_file "kept failed segment audio" "${PARTIAL}/segments/segment_002.wav"
 assert_file "success transcript remains" "${PARTIAL}/segments/transcripts/segment_001.txt"
 assert_file "later segment still processed" "${PARTIAL}/segments/transcripts/segment_003.txt"
+assert_not_file "failed segment has no txt" "${PARTIAL}/segments/transcripts/segment_002.txt"
+assert_not_file "failed segment has no srt" "${PARTIAL}/segments/transcripts/segment_002.srt"
 assert_file "fresh failure log written" "${PARTIAL}/segments/failed_segments.log"
 fail_log="$(cat "${PARTIAL}/segments/failed_segments.log")"
 assert_contains "failure log lists failed segment" "segment_002" "$fail_log"
@@ -302,7 +336,9 @@ else
     echo "  FAIL: stale failure log was not replaced"
     FAIL=$((FAIL + 1))
 fi
+assert_eq "failure log only lists this-run failures" "segment_002" "$(tr -d '\n' <"${PARTIAL}/segments/failed_segments.log" | sed 's/[[:space:]]*$//')"
 assert_contains "summary reports failed count" "Failed: 1" "$out"
+assert_contains "summary reports success count" "Success: 2" "$out"
 
 echo
 echo "== multi-lang.sh: rerun clears stale segment outputs on failure =="
@@ -314,6 +350,9 @@ write_env "${STALE}/project/.env" "${STALE}/whisper.cpp" "${STALE}/records" "${S
 printf 'a' >"${STALE}/segments/segment_001.wav"
 echo "old successful transcript" >"${STALE}/segments/transcripts/segment_001.txt"
 echo "old srt" >"${STALE}/segments/transcripts/segment_001.srt"
+echo "WEBVTT" >"${STALE}/segments/transcripts/segment_001.vtt"
+echo "{}" >"${STALE}/segments/transcripts/segment_001.json"
+echo "old log" >"${STALE}/segments/transcripts/segment_001.whisper.log"
 
 set +e
 out="$(
@@ -327,6 +366,10 @@ assert_eq "stale rerun exits non-zero" "1" "$status"
 assert_file "keeps failed segment audio on rerun" "${STALE}/segments/segment_001.wav"
 assert_not_file "removes stale txt after failed rerun" "${STALE}/segments/transcripts/segment_001.txt"
 assert_not_file "removes stale srt after failed rerun" "${STALE}/segments/transcripts/segment_001.srt"
+assert_not_file "removes stale vtt after failed rerun" "${STALE}/segments/transcripts/segment_001.vtt"
+assert_not_file "removes stale json after failed rerun" "${STALE}/segments/transcripts/segment_001.json"
+assert_file "writes segment log for failed attempt" "${STALE}/segments/transcripts/segment_001.whisper.log"
+assert_not_contains "segment log is not old stale content" "old log" "$(cat "${STALE}/segments/transcripts/segment_001.whisper.log")"
 assert_file "writes failure log for failed rerun" "${STALE}/segments/failed_segments.log"
 
 echo
