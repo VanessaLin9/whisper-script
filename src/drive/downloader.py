@@ -305,15 +305,15 @@ class PublicDriveDownloader:
             except OperationCancelled as exc:
                 cleanup_detail = exc.cleanup_detail
                 if response is not None:
-                    try:
-                        cleanup_http_body(response)
-                    except OSError as cleanup_exc:
-                        cleanup_detail = cleanup_detail or f"cleanup failed: {cleanup_exc}"
+                    cleanup_error = cleanup_http_body(response)
+                    if cleanup_error:
+                        cleanup_detail = cleanup_detail or cleanup_error
                     response = None
                 logger.info(
-                    "Drive download cancelled ref=%s stage=%s",
+                    "Drive download cancelled ref=%s stage=%s%s",
                     file_ref,
                     exc.stage,
+                    f" cleanup={cleanup_detail}" if cleanup_detail else "",
                 )
                 if cleanup_detail and cleanup_detail != exc.cleanup_detail:
                     raise OperationCancelled(
@@ -360,15 +360,16 @@ class PublicDriveDownloader:
         for _ in range(self._max_redirects + 1):
             self._throw_if_cancelled(cancellation, DownloadStage.DOWNLOAD)
             logger.info("Drive HTTP GET %s", redact_url_for_logs(current))
-            response = self._http.request(
-                "GET",
-                current,
-                timeout=self._timeout,
-                headers={"User-Agent": "whisper-script-drive-downloader/1.0"},
-                allow_redirects=False,
-                temp_dir=self._temp_dir,
-                cancellation=cancellation,
-            )
+            request_kwargs: dict[str, object] = {
+                "timeout": self._timeout,
+                "headers": {"User-Agent": "whisper-script-drive-downloader/1.0"},
+                "allow_redirects": False,
+                "temp_dir": self._temp_dir,
+            }
+            # Preserve legacy HttpClient signatures that omit ``cancellation``.
+            if cancellation is not None:
+                request_kwargs["cancellation"] = cancellation
+            response = self._http.request("GET", current, **request_kwargs)  # type: ignore[arg-type]
             if response.status_code in {301, 302, 303, 307, 308}:
                 cleanup_http_body(response)
                 location = response.headers.get("location")

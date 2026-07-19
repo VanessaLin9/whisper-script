@@ -35,6 +35,23 @@ class CancellationContractTests(unittest.TestCase):
             controller.token.throw_if_cancelled("download")
         self.assertEqual(ctx.exception.stage, "download")
 
+    def test_register_interrupt_runs_on_cancel_and_unregister(self) -> None:
+        controller = CancellationController()
+        hits: list[str] = []
+        unregister = controller.token.register_interrupt(lambda: hits.append("a"))
+        unregister()
+        self.assertTrue(controller.cancel())
+        self.assertEqual(hits, [])
+
+        controller2 = CancellationController()
+        hits2: list[str] = []
+        controller2.token.register_interrupt(lambda: hits2.append("b"))
+        self.assertTrue(controller2.cancel())
+        self.assertEqual(hits2, ["b"])
+        # Already cancelled: register invokes immediately.
+        controller2.token.register_interrupt(lambda: hits2.append("c"))
+        self.assertEqual(hits2, ["b", "c"])
+
 
 if __name__ == "__main__":
     unittest.main()

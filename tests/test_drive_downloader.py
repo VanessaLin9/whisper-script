@@ -62,12 +62,14 @@ class FakeHttpClient:
         chunk_size: int = 4,
         hold_before_return: threading.Event | None = None,
         released: threading.Event | None = None,
+        ignore_cancel_after_stream: bool = False,
     ) -> None:
         self._scripted = list(scripted)
         self.calls: list[tuple[str, str]] = []
         self._chunk_size = chunk_size
         self._hold_before_return = hold_before_return
         self._released = released
+        self._ignore_cancel_after_stream = ignore_cancel_after_stream
 
     def request(
         self,
@@ -207,7 +209,7 @@ class FakeHttpClient:
                 self._hold_before_return.set()
                 if self._released is not None:
                     self._released.wait(timeout=5)
-            if cancellation is not None:
+            if cancellation is not None and not self._ignore_cancel_after_stream:
                 cancellation.throw_if_cancelled(DownloadStage.DOWNLOAD.value)
             return result
         except Exception:
@@ -940,6 +942,176 @@ class DownloaderCancellationTests(unittest.TestCase):
                 "https://drive.google.com/file/d/abc123XYZ_-99/view"
             )
             self.assertEqual(result.temp_path.read_bytes(), b"PLAIN")
+
+    def test_legacy_http_client_signature_without_cancellation_kwarg(self) -> None:
+        class LegacyHttpClient:
+            def __init__(self) -> None:
+                self.inner = FakeHttpClient([_ok_audio(b"LEGACY")])
+
+            def request(
+                self,
+                method: str,
+                url: str,
+                *,
+                timeout: float,
+                headers: dict[str, str] | None = None,
+                allow_redirects: bool = False,
+                temp_dir: Path | None = None,
+            ) -> HttpResponse:
+                return self.inner.request(
+                    method,
+                    url,
+                    timeout=timeout,
+                    headers=headers,
+                    allow_redirects=allow_redirects,
+                    temp_dir=temp_dir,
+                )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            downloader = PublicDriveDownloader(LegacyHttpClient(), temp_dir=Path(tmp))
+            result = downloader.download(
+                "https://drive.google.com/file/d/abc123XYZ_-99/view"
+            )
+            self.assertEqual(result.temp_path.read_bytes(), b"LEGACY")
+
+    def test_cleanup_failure_detail_on_cancel(self) -> None:
+        controller = CancellationController()
+        held = threading.Event()
+        released = threading.Event()
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeHttpClient(
+                [_ok_audio(b"PARTIAL")],
+                hold_before_return=held,
+                released=released,
+                ignore_cancel_after_stream=True,
+            )
+            downloader = PublicDriveDownloader(client, temp_dir=Path(tmp), max_retries=1)
+            errors: list[BaseException] = []
+
+            def worker() -> None:
+                try:
+                    downloader.download(
+                        "https://drive.google.com/file/d/abc123XYZ_-99/view",
+                        cancellation=controller.token,
+                    )
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            with mock.patch(
+                "src.drive.downloader.cleanup_http_body",
+                return_value="cleanup failed: EACCES",
+            ):
+                thread = threading.Thread(target=worker)
+                thread.start()
+                self.assertTrue(held.wait(timeout=2))
+                self.assertTrue(controller.cancel())
+                released.set()
+                thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], OperationCancelled)
+            assert isinstance(errors[0], OperationCancelled)
+            self.assertEqual(errors[0].cleanup_detail, "cleanup failed: EACCES")
+
+
+class UrllibCancellationTests(unittest.TestCase):
+    def test_cancel_interrupts_stalled_open_promptly(self) -> None:
+        accepted = threading.Event()
+
+        class StallHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                accepted.set()
+                threading.Event().wait(timeout=60)
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+                del format, args
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), StallHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        controller = CancellationController()
+        errors: list[BaseException] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def worker() -> None:
+                try:
+                    UrllibHttpClient(chunk_size=16).request(
+                        "GET",
+                        f"http://127.0.0.1:{server.server_port}/stall",
+                        timeout=30.0,
+                        temp_dir=root,
+                        cancellation=controller.token,
+                    )
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            worker_thread = threading.Thread(target=worker)
+            worker_thread.start()
+            self.assertTrue(accepted.wait(timeout=2))
+            self.assertTrue(controller.cancel())
+            worker_thread.join(timeout=2)
+            server.shutdown()
+            self.assertFalse(worker_thread.is_alive())
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], OperationCancelled)
+            leftovers = list(root.glob("whisper-drive-http-*")) + list(
+                root.glob("whisper-drive-*")
+            )
+            self.assertEqual(leftovers, [])
+
+    def test_cancel_interrupts_stalled_body_read_promptly(self) -> None:
+        headers_sent = threading.Event()
+
+        class SlowBodyHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                self.send_response(200)
+                self.send_header("Content-Type", "audio/mpeg")
+                self.send_header(
+                    "Content-Disposition",
+                    'attachment; filename="stall.mp3"',
+                )
+                self.send_header("Content-Length", "1000000")
+                self.end_headers()
+                headers_sent.set()
+                threading.Event().wait(timeout=60)
+
+            def log_message(self, format: str, *args: object) -> None:  # noqa: A003
+                del format, args
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), SlowBodyHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        controller = CancellationController()
+        errors: list[BaseException] = []
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+
+            def worker() -> None:
+                try:
+                    UrllibHttpClient(chunk_size=16).request(
+                        "GET",
+                        f"http://127.0.0.1:{server.server_port}/body",
+                        timeout=30.0,
+                        temp_dir=root,
+                        cancellation=controller.token,
+                    )
+                except BaseException as exc:  # noqa: BLE001
+                    errors.append(exc)
+
+            worker_thread = threading.Thread(target=worker)
+            worker_thread.start()
+            self.assertTrue(headers_sent.wait(timeout=2))
+            self.assertTrue(controller.cancel())
+            worker_thread.join(timeout=2)
+            server.shutdown()
+            self.assertFalse(worker_thread.is_alive())
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], OperationCancelled)
+            leftovers = list(root.glob("whisper-drive-http-*")) + list(
+                root.glob("whisper-drive-*")
+            )
+            self.assertEqual(leftovers, [])
 
 
 if __name__ == "__main__":
