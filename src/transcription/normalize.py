@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from src.common import CancellationToken, OperationCancelled
+
 from .subprocess_runner import SubprocessRunner, bounded_tail
 from .types import Stage, TranscriptionError
 
@@ -17,6 +19,7 @@ def normalize_audio(
     audio_path: Path,
     output_path: Path,
     runner: SubprocessRunner,
+    cancellation: CancellationToken | None = None,
 ) -> Path:
     """Write a normalized WAV next to other outputs. Never modifies ``audio_path``."""
     command = [
@@ -34,7 +37,13 @@ def normalize_audio(
     ]
     logger.info("normalize stage starting: %s", output_path)
     try:
-        result = runner.run(command)
+        result = runner.run(
+            command,
+            cancellation=cancellation,
+            cancel_stage=Stage.NORMALIZE.value,
+        )
+    except OperationCancelled:
+        raise
     except TranscriptionError:
         raise
     except Exception as exc:

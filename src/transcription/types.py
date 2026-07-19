@@ -24,6 +24,7 @@ class ProgressStatus(str, Enum):
     STARTED = "started"
     FINISHED = "finished"
     FAILED = "failed"
+    CANCELLED = "cancelled"
 
 
 class ArtifactKind(str, Enum):

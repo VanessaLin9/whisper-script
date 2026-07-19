@@ -6,6 +6,8 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
+from src.common import CancellationToken, OperationCancelled
+
 from .artifacts import (
     assert_no_output_conflicts,
     assert_outputs_within_output_dir,
@@ -50,17 +52,27 @@ def _source_fingerprint(path: Path) -> tuple[int, int]:
     return stat.st_mtime_ns, stat.st_size
 
 
+def _throw_if_cancelled(
+    cancellation: CancellationToken | None,
+    stage: Stage,
+) -> None:
+    if cancellation is not None:
+        cancellation.throw_if_cancelled(stage.value)
+
+
 def transcribe(
     request: TranscribeRequest,
     *,
     runner: SubprocessRunner | None = None,
     on_progress: ProgressCallback | None = None,
+    cancellation: CancellationToken | None = None,
 ) -> TranscribeResult:
     """Transcribe one local audio file.
 
     Success returns :class:`TranscribeResult`. Failure raises
-    :class:`TranscriptionError` with a stage. The source audio file is never
-    moved or deleted.
+    :class:`TranscriptionError` with a stage. Cancellation raises
+    :class:`OperationCancelled`. The source audio file is never moved or
+    deleted.
     """
     active_runner = runner or DefaultSubprocessRunner()
     started_at = _utc_now()
@@ -70,6 +82,7 @@ def transcribe(
     active_stage = Stage.VALIDATE_INPUT
 
     try:
+        _throw_if_cancelled(cancellation, Stage.VALIDATE_INPUT)
         _emit(on_progress, Stage.VALIDATE_INPUT, ProgressStatus.STARTED)
         if not audio_path.is_file():
             raise TranscriptionError(
@@ -102,6 +115,7 @@ def transcribe(
         _emit(on_progress, Stage.VALIDATE_INPUT, ProgressStatus.FINISHED)
 
         active_stage = Stage.CHECK_OUTPUTS
+        _throw_if_cancelled(cancellation, Stage.CHECK_OUTPUTS)
         _emit(on_progress, Stage.CHECK_OUTPUTS, ProgressStatus.STARTED)
         assert_no_output_conflicts(request)
         _emit(on_progress, Stage.CHECK_OUTPUTS, ProgressStatus.FINISHED)
@@ -110,6 +124,7 @@ def transcribe(
         normalized_path: Path | None = None
         if request.normalize:
             active_stage = Stage.NORMALIZE
+            _throw_if_cancelled(cancellation, Stage.NORMALIZE)
             _emit(on_progress, Stage.NORMALIZE, ProgressStatus.STARTED)
             target = normalized_audio_path(request)
             created_paths.append(target)
@@ -118,13 +133,16 @@ def transcribe(
                 audio_path=audio_path,
                 output_path=target,
                 runner=active_runner,
+                cancellation=cancellation,
             )
             whisper_input = normalized_path
+            _throw_if_cancelled(cancellation, Stage.NORMALIZE)
             _emit(on_progress, Stage.NORMALIZE, ProgressStatus.FINISHED, str(normalized_path))
         else:
             logger.info("normalize skipped; using source audio for whisper-cli")
 
         active_stage = Stage.TRANSCRIBE
+        _throw_if_cancelled(cancellation, Stage.TRANSCRIBE)
         _emit(on_progress, Stage.TRANSCRIBE, ProgressStatus.STARTED)
         base = output_base(request)
         for kind in request.outputs:
@@ -138,10 +156,13 @@ def transcribe(
             output_base=base,
             outputs=request.outputs,
             runner=active_runner,
+            cancellation=cancellation,
         )
+        _throw_if_cancelled(cancellation, Stage.TRANSCRIBE)
         _emit(on_progress, Stage.TRANSCRIBE, ProgressStatus.FINISHED)
 
         active_stage = Stage.VALIDATE_ARTIFACTS
+        _throw_if_cancelled(cancellation, Stage.VALIDATE_ARTIFACTS)
         _emit(on_progress, Stage.VALIDATE_ARTIFACTS, ProgressStatus.STARTED)
         artifacts = validate_requested_artifacts(request)
         _emit(on_progress, Stage.VALIDATE_ARTIFACTS, ProgressStatus.FINISHED)
@@ -161,6 +182,13 @@ def transcribe(
                 f"Source audio was modified during transcription: {audio_path}",
             )
 
+        # Commit only after every success invariant has passed. Later cancel is a
+        # no-op for these artifacts; failure cleanup above still removes them.
+        created_paths = [
+            path
+            for path in created_paths
+            if path.resolve() not in {item.resolve() for item in artifacts.values()}
+        ]
         return TranscribeResult(
             raw_audio_path=audio_path,
             normalized_audio_path=normalized_path,
@@ -172,10 +200,22 @@ def transcribe(
             output_dir=request.output_dir,
             stem=request.stem,
         )
+    except OperationCancelled as exc:
+        stage = Stage(exc.stage) if exc.stage in {item.value for item in Stage} else active_stage
+        _emit(on_progress, stage, ProgressStatus.CANCELLED, exc.message)
+        # Preserve source audio; drop only this attempt's partial outputs.
+        removable = [path for path in created_paths if path.resolve() != audio_path]
+        remove_paths(removable)
+        if stage.value != exc.stage:
+            raise OperationCancelled(
+                stage=stage.value,
+                message=exc.message,
+                cleanup_detail=exc.cleanup_detail,
+                cause=exc.cause,
+            ) from exc
+        raise
     except TranscriptionError as exc:
         _emit(on_progress, exc.stage, ProgressStatus.FAILED, exc.message)
-        # Drop only outputs created in this attempt so failures cannot look like
-        # success. Never touch the source audio or pre-existing conflict files.
         removable = [path for path in created_paths if path.resolve() != audio_path]
         remove_paths(removable)
         raise
