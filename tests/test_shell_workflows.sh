@@ -330,7 +330,7 @@ assert_not_file "removes stale srt after failed rerun" "${STALE}/segments/transc
 assert_file "writes failure log for failed rerun" "${STALE}/segments/failed_segments.log"
 
 echo
-echo "== record-meeting.sh: ffmpeg failure does not start whisper =="
+echo "== record-meeting.sh: ffmpeg failure does not start core =="
 REC="${TMP_ROOT}/record_fail"
 make_whisper_root "${REC}/whisper.cpp"
 clone_project "${REC}/project"
@@ -349,26 +349,27 @@ assert_contains "recording failure message" "FFmpeg recording failed" "$out"
 assert_contains "does not start transcription" "Transcription was not started" "$out"
 transcript_count="$(find "${REC}/records" -name 'meeting_*.txt' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "no transcript created after ffmpeg failure" "0" "$transcript_count"
+assert_contains "delegates to python core" "src.transcription.cli" "$(grep -n 'src.transcription.cli' "${REC}/project/scripts/record-meeting.sh" || true)"
+if ! grep -E '^[[:space:]]*"?\$\{?WHISPER_CLI\}?"?' "${REC}/project/scripts/record-meeting.sh" >/dev/null; then
+    echo "  PASS: record-meeting.sh does not exec whisper-cli directly"
+    PASS=$((PASS + 1))
+else
+    echo "  FAIL: record-meeting.sh still appears to invoke whisper-cli directly"
+    FAIL=$((FAIL + 1))
+fi
 
-echo
-echo "== record-meeting.sh: intentional interrupt still transcribes valid audio =="
-REC_OK="${TMP_ROOT}/record_ok"
-make_whisper_root "${REC_OK}/whisper.cpp"
-clone_project "${REC_OK}/project"
-write_env "${REC_OK}/project/.env" "${REC_OK}/whisper.cpp" "${REC_OK}/records" "${REC_OK}/transcripts"
-
-# Background shell jobs ignore SIGINT; drive the script from Python so the
-# interrupt trap runs the same way a foreground Ctrl+C would.
-set +e
-out="$(
+run_record_with_interrupt() {
+  local case_dir="$1"
+  shift
   PATH="${FAKE_BIN}:${PATH}" \
   FFMPEG_SLEEP_FOREVER=1 \
-  REC_OK_DIR="${REC_OK}" \
+  REC_CASE_DIR="${case_dir}" \
+  "$@" \
   python3 - <<'PY'
 import os, signal, subprocess, sys, time
 from pathlib import Path
 
-rec = Path(os.environ["REC_OK_DIR"])
+rec = Path(os.environ["REC_CASE_DIR"])
 script = rec / "project" / "scripts" / "record-meeting.sh"
 records = rec / "records"
 env = os.environ.copy()
@@ -389,10 +390,7 @@ for _ in range(50):
         break
     time.sleep(0.1)
 
-if not wav_ready and proc.poll() is None:
-    proc.send_signal(signal.SIGINT)
-else:
-    proc.send_signal(signal.SIGINT)
+proc.send_signal(signal.SIGINT)
 
 try:
     out, _ = proc.communicate(timeout=10)
@@ -407,13 +405,55 @@ print(out or "")
 print(f"EXIT:{proc.returncode}")
 sys.exit(0 if proc.returncode == 0 else 1)
 PY
-)"
+}
+
+echo
+echo "== record-meeting.sh: intentional interrupt still transcribes valid audio =="
+REC_OK="${TMP_ROOT}/record_ok"
+make_whisper_root "${REC_OK}/whisper.cpp"
+clone_project "${REC_OK}/project"
+write_env "${REC_OK}/project/.env" "${REC_OK}/whisper.cpp" "${REC_OK}/records" "${REC_OK}/transcripts"
+
+# Background shell jobs ignore SIGINT; drive the script from Python so the
+# interrupt trap runs the same way a foreground Ctrl+C would.
+set +e
+out="$(run_record_with_interrupt "$REC_OK")"
 status=$?
 set -e
 assert_eq "interrupt path exit status" "0" "$status"
 assert_contains "interrupt path reports completion" "Transcription complete" "$out"
 transcript_count="$(find "${REC_OK}/records" -name 'meeting_*.txt' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "interrupt path produces transcript" "1" "$transcript_count"
+srt_count="$(find "${REC_OK}/records" -name 'meeting_*.srt' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "interrupt path produces srt" "1" "$srt_count"
+wav_path="$(find "${REC_OK}/records" -name 'meeting_*.wav' | head -n 1)"
+assert_file "legacy wav retained" "$wav_path"
+assert_file "legacy txt basename matches wav stem" "${wav_path%.wav}.txt"
+assert_file "legacy srt basename matches wav stem" "${wav_path%.wav}.srt"
+assert_not_file "no _transcription suffix for recording" "${wav_path%.wav}_transcription.txt"
+assert_not_file "no normalized wav for recording" "${wav_path%.wav}_norm16k.wav"
+assert_not_contains "no false _transcription naming in summary" "_transcription.txt" "$out"
+
+echo
+echo "== record-meeting.sh: core failure keeps wav and does not claim success =="
+REC_FAIL="${TMP_ROOT}/record_core_fail"
+make_whisper_root "${REC_FAIL}/whisper.cpp"
+clone_project "${REC_FAIL}/project"
+write_env "${REC_FAIL}/project/.env" "${REC_FAIL}/whisper.cpp" "${REC_FAIL}/records" "${REC_FAIL}/transcripts"
+
+set +e
+out="$(FAIL_WHISPER=1 run_record_with_interrupt "$REC_FAIL")"
+status=$?
+set -e
+assert_eq "core failure exit status" "1" "$status"
+assert_contains "core failure message" "Transcription failed" "$out"
+assert_not_contains "core failure does not claim success" "Transcription complete" "$out"
+wav_count="$(find "${REC_FAIL}/records" -name 'meeting_*.wav' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "keeps wav after core failure" "1" "$wav_count"
+log_count="$(find "${REC_FAIL}/records" -name 'ffmpeg_*.log' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "keeps ffmpeg log after core failure" "1" "$log_count"
+txt_count="$(find "${REC_FAIL}/records" -name 'meeting_*.txt' 2>/dev/null | wc -l | tr -d ' ')"
+assert_eq "no success transcript after core failure" "0" "$txt_count"
 
 echo
 echo "== syntax / compile checks =="

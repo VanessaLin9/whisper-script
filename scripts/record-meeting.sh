@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
-# Meeting Assist: record with FFmpeg, then transcribe with whisper.cpp.
+# Meeting Assist: record with FFmpeg, then transcribe via the shared core.
 # Configuration comes from the repository .env file.
+#
+# Microphone capture, Ctrl+C trap, and flat legacy filenames stay in this
+# shell. Transcription (TXT + SRT, no second normalize) is delegated to
+# src.transcription.
 
 set -euo pipefail
 
@@ -26,8 +30,10 @@ echo
 mkdir -p "$MEETING_RECORDS_DIR"
 
 ts="$(date +'%Y%m%d_%H%M%S')"
-wav="${MEETING_RECORDS_DIR}/meeting_${ts}.wav"
+stem="meeting_${ts}"
+wav="${MEETING_RECORDS_DIR}/${stem}.wav"
 ffmpeg_log="${MEETING_RECORDS_DIR}/ffmpeg_${ts}.log"
+base="${MEETING_RECORDS_DIR}/${stem}"
 
 echo "[*] Available audio devices:"
 ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | sed 's/^/[ffmpeg] /' || true
@@ -81,15 +87,30 @@ echo "[*] Recording stopped."
 echo "[*] Recording saved: $wav"
 echo "[*] Starting transcription..."
 
-base="${MEETING_RECORDS_DIR}/meeting_${ts}"
-
-"$WHISPER_CLI" \
-    -m "$MODEL_FILE" \
-    -f "$wav" \
+set +e
+PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m src.transcription.cli \
+    --audio "$wav" \
+    --output-dir "$MEETING_RECORDS_DIR" \
+    --stem "$stem" \
+    --artifact-basename "$stem" \
     --language "$DEFAULT_LANGUAGE" \
+    --model "$PREFERRED_MODEL" \
+    --model-path "$MODEL_FILE" \
+    --whisper-cli "$WHISPER_CLI" \
     --threads "$THREADS" \
-    --output-txt --output-srt \
-    --output-file "$base"
+    --outputs "txt,srt" \
+    --no-normalize \
+    --ffmpeg ffmpeg
+STATUS=$?
+set -e
+
+if [ "$STATUS" -ne 0 ]; then
+    echo "[!] Transcription failed (see stage details above)."
+    echo "    Audio and FFmpeg log were kept:"
+    echo "    Audio : $wav"
+    echo "    Log   : ${ffmpeg_log}"
+    exit "$STATUS"
+fi
 
 echo
 echo "[✓] Transcription complete!"

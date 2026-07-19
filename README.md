@@ -164,7 +164,7 @@ YYYY-MM-DD_HHMM_<safe-stem>/
 
 按 `Ctrl+C` 停止錄音，腳本會接著執行轉錄。
 
-此腳本**尚未**遷移到 Output Manager meeting workspace。目前仍直接寫入 `MEETING_RECORDS_DIR` 扁平檔名：
+麥克風擷取與 Ctrl+C 仍由 shell 負責；轉錄已委派給共用 `src.transcription` core（TXT + SRT，錄音已是 mono 16 kHz，不再二次 normalize）。此腳本**尚未**遷移到 Output Manager meeting workspace，仍寫入 `MEETING_RECORDS_DIR` 扁平 legacy 檔名：
 
 ```text
 MEETING_RECORDS_DIR/

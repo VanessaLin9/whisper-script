@@ -46,6 +46,38 @@ class TranscriptionCliTests(unittest.TestCase):
         self.assertEqual(request.outputs, frozenset({ArtifactKind.TXT, ArtifactKind.SRT}))
         self.assertTrue(request.normalize)
         self.assertTrue(request.keep_normalized)
+        self.assertIsNone(request.artifact_basename)
+
+    def test_request_from_args_maps_artifact_basename(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--audio",
+                "/tmp/a.wav",
+                "--output-dir",
+                "/tmp/out",
+                "--stem",
+                "meeting_20260719_120000",
+                "--artifact-basename",
+                "meeting_20260719_120000",
+                "--language",
+                "zh",
+                "--model",
+                "small",
+                "--model-path",
+                "/tmp/model.bin",
+                "--whisper-cli",
+                "/tmp/whisper-cli",
+                "--threads",
+                "4",
+                "--outputs",
+                "txt,srt",
+                "--no-normalize",
+            ]
+        )
+        request = request_from_args(args)
+        self.assertEqual(request.artifact_basename, "meeting_20260719_120000")
+        self.assertFalse(request.normalize)
 
     def test_parser_default_outputs_match_shared_policy(self) -> None:
         parser = build_parser()

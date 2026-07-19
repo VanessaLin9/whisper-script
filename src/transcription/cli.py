@@ -47,6 +47,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--audio", required=True, type=Path, help="Local audio file path")
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--stem", required=True, help="Single filename component for outputs")
+    parser.add_argument(
+        "--artifact-basename",
+        default=None,
+        help=(
+            "Optional whisper output basename (single filename component). "
+            "Default: <stem>_transcription"
+        ),
+    )
     parser.add_argument("--language", required=True)
     parser.add_argument("--model", required=True, help="Model name for metadata (e.g. small)")
     parser.add_argument("--model-path", required=True, type=Path)
@@ -96,6 +104,7 @@ def request_from_args(args: argparse.Namespace) -> TranscribeRequest:
         normalize=args.normalize,
         keep_normalized=args.keep_normalized,
         ffmpeg=args.ffmpeg,
+        artifact_basename=args.artifact_basename,
     )
 
 

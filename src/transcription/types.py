@@ -65,6 +65,11 @@ class TranscribeRequest:
     normalize: bool = True
     keep_normalized: bool = True
     ffmpeg: Path = Path("ffmpeg")
+    # Optional whisper --output-file basename (single filename component).
+    # When None, artifacts use the default ``{stem}_transcription.*`` layout.
+    # Legacy shell workflows may pass the stem itself (e.g. meeting_<ts>,
+    # segment_NNN) so outputs stay ``<basename>.txt/.srt`` without renaming.
+    artifact_basename: str | None = None
 
 
 @dataclass(frozen=True)
