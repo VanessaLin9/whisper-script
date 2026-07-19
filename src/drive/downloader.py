@@ -9,6 +9,8 @@ import tempfile
 from email.message import EmailMessage
 from pathlib import Path
 
+from src.common import CancellationToken, OperationCancelled
+
 from .http import (
     HttpClient,
     UrllibHttpClient,
@@ -214,17 +216,24 @@ class PublicDriveDownloader:
         self._max_confirmations = max_confirmations
         self._temp_dir = temp_dir
 
-    def download(self, drive_url: str) -> DownloadResult:
+    def download(
+        self,
+        drive_url: str,
+        *,
+        cancellation: CancellationToken | None = None,
+    ) -> DownloadResult:
         parsed = parse_public_drive_url(drive_url)
         url = parsed.canonical_url
         confirmations = 0
         retries_used = 0
         file_ref = file_ref_for_logs(parsed.file_id)
+        self._throw_if_cancelled(cancellation, DownloadStage.DOWNLOAD)
 
         while True:
             response: HttpResponse | None = None
             try:
-                response = self._get_with_redirect_budget(url)
+                self._throw_if_cancelled(cancellation, DownloadStage.DOWNLOAD)
+                response = self._get_with_redirect_budget(url, cancellation=cancellation)
                 self._assert_http_ok(response)
                 content_type = response.headers.get("content-type")
 
@@ -249,6 +258,7 @@ class PublicDriveDownloader:
                             confirmations,
                         )
                         # Confirmation budget is independent of transient retries.
+                        self._throw_if_cancelled(cancellation, DownloadStage.DOWNLOAD)
                         continue
                     if token and confirmations >= self._max_confirmations:
                         raise DownloadError(
@@ -280,6 +290,9 @@ class PublicDriveDownloader:
                     content_disposition=response.headers.get("content-disposition"),
                     content_type=content_type,
                 )
+                # Cancel before commit. Once finalize succeeds the DownloadResult
+                # is committed and a later cancel is a no-op (success wins).
+                self._throw_if_cancelled(cancellation, DownloadStage.DOWNLOAD)
                 temp_path = self._finalize_temp(response, safe_name)
                 response = None
                 return DownloadResult(
@@ -289,6 +302,27 @@ class PublicDriveDownloader:
                     content_type=content_type,
                     size_bytes=temp_path.stat().st_size,
                 )
+            except OperationCancelled as exc:
+                cleanup_detail = exc.cleanup_detail
+                if response is not None:
+                    try:
+                        cleanup_http_body(response)
+                    except OSError as cleanup_exc:
+                        cleanup_detail = cleanup_detail or f"cleanup failed: {cleanup_exc}"
+                    response = None
+                logger.info(
+                    "Drive download cancelled ref=%s stage=%s",
+                    file_ref,
+                    exc.stage,
+                )
+                if cleanup_detail and cleanup_detail != exc.cleanup_detail:
+                    raise OperationCancelled(
+                        stage=exc.stage,
+                        message=exc.message,
+                        cleanup_detail=cleanup_detail,
+                        cause=exc.cause,
+                    ) from exc
+                raise
             except DownloadError as exc:
                 if response is not None:
                     cleanup_http_body(response)
@@ -307,6 +341,7 @@ class PublicDriveDownloader:
                 retries_used += 1
                 if retries_used >= self._max_retries:
                     raise
+                self._throw_if_cancelled(cancellation, DownloadStage.DOWNLOAD)
                 logger.warning(
                     "Drive download retry %s/%s ref=%s stage=%s",
                     retries_used,
@@ -315,9 +350,15 @@ class PublicDriveDownloader:
                     exc.stage.value,
                 )
 
-    def _get_with_redirect_budget(self, url: str) -> HttpResponse:
+    def _get_with_redirect_budget(
+        self,
+        url: str,
+        *,
+        cancellation: CancellationToken | None = None,
+    ) -> HttpResponse:
         current = url
         for _ in range(self._max_redirects + 1):
+            self._throw_if_cancelled(cancellation, DownloadStage.DOWNLOAD)
             logger.info("Drive HTTP GET %s", redact_url_for_logs(current))
             response = self._http.request(
                 "GET",
@@ -326,6 +367,7 @@ class PublicDriveDownloader:
                 headers={"User-Agent": "whisper-script-drive-downloader/1.0"},
                 allow_redirects=False,
                 temp_dir=self._temp_dir,
+                cancellation=cancellation,
             )
             if response.status_code in {301, 302, 303, 307, 308}:
                 cleanup_http_body(response)
@@ -338,12 +380,22 @@ class PublicDriveDownloader:
                         status_code=response.status_code,
                     )
                 current = nxt
+                self._throw_if_cancelled(cancellation, DownloadStage.DOWNLOAD)
                 continue
             return response
         raise DownloadError(
             DownloadStage.DOWNLOAD,
             f"Exceeded redirect limit ({self._max_redirects})",
         )
+
+    @staticmethod
+    def _throw_if_cancelled(
+        cancellation: CancellationToken | None,
+        stage: DownloadStage,
+    ) -> None:
+        if cancellation is not None:
+            cancellation.throw_if_cancelled(stage.value)
+
 
     def _assert_http_ok(self, response: HttpResponse) -> None:
         code = response.status_code

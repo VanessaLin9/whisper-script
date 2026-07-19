@@ -11,6 +11,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
+from src.common import CancellationController, CancellationToken, OperationCancelled
 from src.drive import (
     DownloadError,
     DownloadStage,
@@ -59,10 +60,14 @@ class FakeHttpClient:
         scripted: list[HttpResponse | Exception | dict],
         *,
         chunk_size: int = 4,
+        hold_before_return: threading.Event | None = None,
+        released: threading.Event | None = None,
     ) -> None:
         self._scripted = list(scripted)
         self.calls: list[tuple[str, str]] = []
         self._chunk_size = chunk_size
+        self._hold_before_return = hold_before_return
+        self._released = released
 
     def request(
         self,
@@ -73,16 +78,19 @@ class FakeHttpClient:
         headers: dict[str, str] | None = None,
         allow_redirects: bool = False,
         temp_dir: Path | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> HttpResponse:
         del timeout, headers, allow_redirects
         self.calls.append((method, url))
+        if cancellation is not None:
+            cancellation.throw_if_cancelled(DownloadStage.DOWNLOAD.value)
         if not self._scripted:
             raise AssertionError(f"Unexpected HTTP call: {method} {url}")
         item = self._scripted.pop(0)
         if isinstance(item, Exception):
             raise item
         if isinstance(item, dict):
-            return self._stream_dict(item, temp_dir=temp_dir)
+            return self._stream_dict(item, temp_dir=temp_dir, cancellation=cancellation)
         # Legacy HttpResponse with in-memory body: stream it.
         return self._stream_bytes(
             status_code=item.status_code,
@@ -93,9 +101,18 @@ class FakeHttpClient:
             ),
             temp_dir=temp_dir,
             fail_after=None,
+            cancel_after=None,
+            cancel_controller=None,
+            cancellation=cancellation,
         )
 
-    def _stream_dict(self, item: dict, *, temp_dir: Path | None) -> HttpResponse:
+    def _stream_dict(
+        self,
+        item: dict,
+        *,
+        temp_dir: Path | None,
+        cancellation: CancellationToken | None,
+    ) -> HttpResponse:
         return self._stream_bytes(
             status_code=int(item["status_code"]),
             headers=dict(item.get("headers") or {}),
@@ -103,6 +120,9 @@ class FakeHttpClient:
             body=bytes(item.get("body") or b""),
             temp_dir=temp_dir,
             fail_after=item.get("fail_after"),
+            cancel_after=item.get("cancel_after"),
+            cancel_controller=item.get("cancel_controller"),
+            cancellation=cancellation,
         )
 
     def _stream_bytes(
@@ -114,6 +134,9 @@ class FakeHttpClient:
         body: bytes,
         temp_dir: Path | None,
         fail_after: int | None,
+        cancel_after: int | None,
+        cancel_controller: CancellationController | None,
+        cancellation: CancellationToken | None,
     ) -> HttpResponse:
         directory = Path(temp_dir) if temp_dir is not None else None
         if directory is not None:
@@ -132,6 +155,8 @@ class FakeHttpClient:
             with handle:
                 offset = 0
                 while offset < len(body):
+                    if cancellation is not None:
+                        cancellation.throw_if_cancelled(DownloadStage.DOWNLOAD.value)
                     if fail_after is not None and size >= fail_after:
                         raise DownloadError(
                             DownloadStage.DOWNLOAD,
@@ -145,6 +170,8 @@ class FakeHttpClient:
                                 DownloadStage.DOWNLOAD,
                                 "Simulated stream transport failure",
                             )
+                    if cancel_after is not None:
+                        end = min(end, offset + max(0, cancel_after - size))
                     chunk = body[offset:end]
                     handle.write(chunk)
                     size += len(chunk)
@@ -157,10 +184,18 @@ class FakeHttpClient:
                             DownloadStage.DOWNLOAD,
                             "Simulated stream transport failure",
                         )
+                    if (
+                        cancel_after is not None
+                        and cancel_controller is not None
+                        and size >= cancel_after
+                    ):
+                        cancel_controller.cancel()
+                        if cancellation is not None:
+                            cancellation.throw_if_cancelled(DownloadStage.DOWNLOAD.value)
             if size == 0:
                 path.unlink(missing_ok=True)
                 path = None
-            return HttpResponse(
+            result = HttpResponse(
                 status_code=status_code,
                 headers={k.lower(): v for k, v in headers.items()},
                 url=url,
@@ -168,6 +203,13 @@ class FakeHttpClient:
                 size_bytes=size,
                 body_path=path,
             )
+            if self._hold_before_return is not None:
+                self._hold_before_return.set()
+                if self._released is not None:
+                    self._released.wait(timeout=5)
+            if cancellation is not None:
+                cancellation.throw_if_cancelled(DownloadStage.DOWNLOAD.value)
+            return result
         except Exception:
             if path is not None:
                 try:
@@ -678,6 +720,226 @@ class DownloaderTests(unittest.TestCase):
             PublicDriveDownloader(client, max_confirmations=-1)
         with self.assertRaises(ValueError):
             PublicDriveDownloader(client, timeout_seconds=0)
+
+
+class DownloaderCancellationTests(unittest.TestCase):
+    def test_cancel_before_request(self) -> None:
+        client = FakeHttpClient([_ok_audio()])
+        controller = CancellationController()
+        controller.cancel()
+        downloader = PublicDriveDownloader(client)
+        with self.assertRaises(OperationCancelled) as ctx:
+            downloader.download(
+                "https://drive.google.com/file/d/abc123XYZ_-99/view",
+                cancellation=controller.token,
+            )
+        self.assertEqual(ctx.exception.stage, DownloadStage.DOWNLOAD.value)
+        self.assertEqual(client.calls, [])
+
+    def test_cancel_between_redirects(self) -> None:
+        controller = CancellationController()
+
+        class RedirectThenCancel(FakeHttpClient):
+            def request(self, method, url, **kwargs):  # noqa: ANN001
+                response = super().request(method, url, **kwargs)
+                # After first redirect response is consumed by downloader, cancel
+                # before the follow-up GET.
+                if len(self.calls) == 1:
+                    controller.cancel()
+                return response
+
+        client = RedirectThenCancel(
+            [
+                {
+                    "status_code": 302,
+                    "headers": {
+                        "location": "https://drive.google.com/uc?export=download&id=abc123XYZ_-99&confirm=1"
+                    },
+                    "body": b"",
+                    "url": "https://drive.google.com/uc?export=download&id=abc123XYZ_-99",
+                },
+                _ok_audio(),
+            ]
+        )
+        downloader = PublicDriveDownloader(client, max_retries=1)
+        with self.assertRaises(OperationCancelled):
+            downloader.download(
+                "https://drive.google.com/file/d/abc123XYZ_-99/view",
+                cancellation=controller.token,
+            )
+        self.assertEqual(len(client.calls), 1)
+
+    def test_cancel_between_confirmation_attempts(self) -> None:
+        controller = CancellationController()
+
+        class ConfirmThenCancel(FakeHttpClient):
+            def request(self, method, url, **kwargs):  # noqa: ANN001
+                response = super().request(method, url, **kwargs)
+                if len(self.calls) == 1:
+                    controller.cancel()
+                return response
+
+        client = ConfirmThenCancel(
+            [
+                {
+                    "status_code": 200,
+                    "headers": {"content-type": "text/html"},
+                    "body": b'<html><input name="confirm" value="TOK"/></html>',
+                    "url": "https://drive.google.com/uc?id=abc123XYZ_-99",
+                },
+                _ok_audio(),
+            ]
+        )
+        downloader = PublicDriveDownloader(client, max_retries=1)
+        with self.assertRaises(OperationCancelled):
+            downloader.download(
+                "https://drive.google.com/file/d/abc123XYZ_-99/view",
+                cancellation=controller.token,
+            )
+        self.assertEqual(len(client.calls), 1)
+
+    def test_cancel_during_chunk_stream_cleans_partial(self) -> None:
+        controller = CancellationController()
+        body = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = FakeHttpClient(
+                [
+                    {
+                        **_ok_audio(body=body),
+                        "cancel_after": 8,
+                        "cancel_controller": controller,
+                    }
+                ],
+                chunk_size=4,
+            )
+            downloader = PublicDriveDownloader(client, temp_dir=root, max_retries=1)
+            with self.assertRaises(OperationCancelled) as ctx:
+                downloader.download(
+                    "https://drive.google.com/file/d/abc123XYZ_-99/view",
+                    cancellation=controller.token,
+                )
+            self.assertEqual(ctx.exception.stage, DownloadStage.DOWNLOAD.value)
+            leftovers = list(root.glob("fake-drive-*")) + list(root.glob("whisper-drive-*"))
+            self.assertEqual(leftovers, [])
+
+    def test_cancel_before_retry_is_not_retried(self) -> None:
+        controller = CancellationController()
+
+        class FailThenCancel(FakeHttpClient):
+            def request(self, method, url, **kwargs):  # noqa: ANN001
+                if not self.calls:
+                    self.calls.append((method, url))
+                    controller.cancel()
+                    raise DownloadError(DownloadStage.DOWNLOAD, "transient boom")
+                return super().request(method, url, **kwargs)
+
+        client = FailThenCancel([_ok_audio()])
+        downloader = PublicDriveDownloader(client, max_retries=3)
+        with self.assertRaises(OperationCancelled):
+            downloader.download(
+                "https://drive.google.com/file/d/abc123XYZ_-99/view",
+                cancellation=controller.token,
+            )
+        self.assertEqual(len(client.calls), 1)
+
+    def test_repeated_cancel_is_idempotent(self) -> None:
+        controller = CancellationController()
+        self.assertTrue(controller.cancel())
+        self.assertFalse(controller.cancel())
+        self.assertFalse(controller.cancel())
+        client = FakeHttpClient([_ok_audio()])
+        downloader = PublicDriveDownloader(client)
+        with self.assertRaises(OperationCancelled):
+            downloader.download(
+                "https://drive.google.com/file/d/abc123XYZ_-99/view",
+                cancellation=controller.token,
+            )
+
+    def test_cancel_vs_success_race_success_wins_when_committed(self) -> None:
+        controller = CancellationController()
+        held = threading.Event()
+        released = threading.Event()
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeHttpClient(
+                [_ok_audio(b"COMMITTED")],
+                hold_before_return=held,
+                released=released,
+            )
+            downloader = PublicDriveDownloader(client, temp_dir=Path(tmp), max_retries=1)
+            errors: list[BaseException] = []
+            result_box: list[object] = []
+
+            def worker() -> None:
+                try:
+                    result_box.append(
+                        downloader.download(
+                            "https://drive.google.com/file/d/abc123XYZ_-99/view",
+                            cancellation=controller.token,
+                        )
+                    )
+                except BaseException as exc:  # noqa: BLE001 - capture for assertion
+                    errors.append(exc)
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            self.assertTrue(held.wait(timeout=2))
+            # Release HTTP return first so finalize/commit can complete, then cancel.
+            released.set()
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(errors, [])
+            self.assertEqual(len(result_box), 1)
+            result = result_box[0]
+            assert hasattr(result, "temp_path")
+            self.assertTrue(result.temp_path.is_file())
+            self.assertEqual(result.temp_path.read_bytes(), b"COMMITTED")
+            # Post-success cancel is a no-op for the completed download.
+            self.assertTrue(controller.cancel() or controller.is_cancelled())
+
+    def test_cancel_vs_success_race_cancel_wins_before_commit(self) -> None:
+        controller = CancellationController()
+        held = threading.Event()
+        released = threading.Event()
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            client = FakeHttpClient(
+                [_ok_audio(b"NOTCOMMITTED")],
+                hold_before_return=held,
+                released=released,
+            )
+            downloader = PublicDriveDownloader(client, temp_dir=root, max_retries=1)
+            errors: list[BaseException] = []
+
+            def worker() -> None:
+                try:
+                    downloader.download(
+                        "https://drive.google.com/file/d/abc123XYZ_-99/view",
+                        cancellation=controller.token,
+                    )
+                except BaseException as exc:  # noqa: BLE001 - capture for assertion
+                    errors.append(exc)
+
+            thread = threading.Thread(target=worker)
+            thread.start()
+            self.assertTrue(held.wait(timeout=2))
+            self.assertTrue(controller.cancel())
+            released.set()
+            thread.join(timeout=2)
+            self.assertFalse(thread.is_alive())
+            self.assertEqual(len(errors), 1)
+            self.assertIsInstance(errors[0], OperationCancelled)
+            leftovers = list(root.glob("fake-drive-*")) + list(root.glob("whisper-drive-*"))
+            self.assertEqual(leftovers, [])
+
+    def test_without_token_behavior_unchanged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            client = FakeHttpClient([_ok_audio(b"PLAIN")])
+            downloader = PublicDriveDownloader(client, temp_dir=Path(tmp))
+            result = downloader.download(
+                "https://drive.google.com/file/d/abc123XYZ_-99/view"
+            )
+            self.assertEqual(result.temp_path.read_bytes(), b"PLAIN")
 
 
 if __name__ == "__main__":

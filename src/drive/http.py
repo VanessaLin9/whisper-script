@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import Protocol
 from urllib.parse import urljoin, urlparse
 
+from src.common import CancellationToken, OperationCancelled
+
 from .types import DownloadError, DownloadStage, HttpResponse
 from .url import redact_url_for_logs
 
@@ -29,6 +31,7 @@ class HttpClient(Protocol):
         headers: dict[str, str] | None = None,
         allow_redirects: bool = False,
         temp_dir: Path | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> HttpResponse:
         """Perform one HTTP request.
 
@@ -78,7 +81,10 @@ class UrllibHttpClient:
         headers: dict[str, str] | None = None,
         allow_redirects: bool = False,
         temp_dir: Path | None = None,
+        cancellation: CancellationToken | None = None,
     ) -> HttpResponse:
+        if cancellation is not None:
+            cancellation.throw_if_cancelled(DownloadStage.DOWNLOAD.value)
         request = urllib.request.Request(
             url, method=method.upper(), headers=headers or {}
         )
@@ -91,11 +97,23 @@ class UrllibHttpClient:
         opener = urllib.request.build_opener(*handlers)
         try:
             with opener.open(request, timeout=timeout) as response:
-                return self._stream_response(response, fallback_url=url, temp_dir=temp_dir)
+                return self._stream_response(
+                    response,
+                    fallback_url=url,
+                    temp_dir=temp_dir,
+                    cancellation=cancellation,
+                )
+        except OperationCancelled:
+            raise
         except urllib.error.HTTPError as exc:
             # 3xx should be retained by _NoRedirectHandler; other HTTPError
             # bodies are still streamed for status mapping / HTML checks.
-            return self._stream_response(exc, fallback_url=url, temp_dir=temp_dir)
+            return self._stream_response(
+                exc,
+                fallback_url=url,
+                temp_dir=temp_dir,
+                cancellation=cancellation,
+            )
         except urllib.error.URLError as exc:
             raise DownloadError(
                 DownloadStage.DOWNLOAD,
@@ -121,6 +139,7 @@ class UrllibHttpClient:
         *,
         fallback_url: str,
         temp_dir: Path | None,
+        cancellation: CancellationToken | None = None,
     ) -> HttpResponse:
         status = int(getattr(response, "status", None) or getattr(response, "code", 200))
         raw_headers_obj = getattr(response, "headers", None) or {}
@@ -152,6 +171,8 @@ class UrllibHttpClient:
 
         try:
             while True:
+                if cancellation is not None:
+                    cancellation.throw_if_cancelled(DownloadStage.DOWNLOAD.value)
                 try:
                     chunk = response.read(self._chunk_size)  # type: ignore[attr-defined]
                 except (
@@ -189,7 +210,7 @@ class UrllibHttpClient:
                     cause=exc,
                 ) from exc
             handle = None
-        except DownloadError:
+        except (DownloadError, OperationCancelled):
             if handle is not None:
                 try:
                     handle.close()

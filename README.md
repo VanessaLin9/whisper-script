@@ -308,7 +308,12 @@ python3 setup.py install
 bash tests/run_tests.sh
 ```
 
-涵蓋 Output Manager、Drive downloader、Phase 1 workflow／CLI、transcription core，以及既有 shell wrapper 行為。
+涵蓋 Output Manager、Drive downloader、cancellation contract、Phase 1 workflow／CLI、transcription core，以及既有 shell wrapper 行為。
+
+### Cancellation（backend）
+
+`src/common` 提供 thread-safe `CancellationController`／`CancellationToken` 與 typed `OperationCancelled`（獨立 terminal outcome，不是一般 failure）。
+`PublicDriveDownloader.download(..., cancellation=token)` 可選；未傳 token 時行為與既有 API 相同。取消會在 request／redirect／confirmation／retry／chunk 邊界檢查，並清除尚未 commit 的 partial temp（不會當成可重試的 network error）。
 
 ## 專案結構
 
@@ -330,6 +335,7 @@ whisper-script/
 ├── pipelines/
 │   └── multilang_batch.py      # not migrated in Phase 1
 └── src/
+    ├── common/                 # shared cancellation contract
     ├── drive/                  # public Drive URL adapter + downloader
     ├── output_manager/         # meeting workspace + ownership policy
     ├── workflow/               # Phase 1 Drive→workspace→transcribe + CLI
