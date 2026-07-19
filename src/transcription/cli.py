@@ -13,6 +13,7 @@ from pathlib import Path
 from src.output_manager import default_outputs_arg
 
 from .core import transcribe
+from .subprocess_runner import StreamingSubprocessRunner
 from .types import (
     ArtifactKind,
     ProgressEvent,
@@ -82,6 +83,14 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Do not print stage progress to stderr",
     )
+    parser.add_argument(
+        "--stream-subprocess",
+        action="store_true",
+        help=(
+            "Stream child ffmpeg/whisper output to stderr with a bounded "
+            "diagnostic tail (for interactive shell wrappers)"
+        ),
+    )
     return parser
 
 
@@ -113,13 +122,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     request = request_from_args(args)
     on_progress = None if args.quiet_progress else _progress_printer
+    runner = StreamingSubprocessRunner() if args.stream_subprocess else None
 
     try:
-        result = transcribe(request, on_progress=on_progress)
+        result = transcribe(request, runner=runner, on_progress=on_progress)
     except TranscriptionError as exc:
         print(f"[!] Transcription failed at stage={exc.stage.value}: {exc.message}", file=sys.stderr)
         if exc.exit_code is not None:
             print(f"    subprocess exit: {exc.exit_code}", file=sys.stderr)
+        if exc.diagnostic:
+            print("    --- subprocess diagnostic (tail) ---", file=sys.stderr)
+            print(exc.diagnostic, file=sys.stderr)
         return 1
 
     print(f"[*] Transcription OK: {result.output_dir}")

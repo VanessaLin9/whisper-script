@@ -95,6 +95,8 @@ class TranscriptionError(Exception):
     message: str
     exit_code: int | None = None
     cause: BaseException | None = field(default=None, repr=False)
+    # Bounded subprocess stderr/stdout tail for interactive diagnostics.
+    diagnostic: str | None = field(default=None, repr=False)
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         suffix = f" (exit={self.exit_code})" if self.exit_code is not None else ""

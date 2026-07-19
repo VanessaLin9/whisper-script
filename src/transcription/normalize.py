@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from .subprocess_runner import SubprocessRunner
+from .subprocess_runner import SubprocessRunner, bounded_tail
 from .types import Stage, TranscriptionError
 
 logger = logging.getLogger(__name__)
@@ -45,15 +45,17 @@ def normalize_audio(
             cause=exc,
         ) from exc
     if result.returncode != 0:
+        diagnostic = bounded_tail((result.stderr or result.stdout).strip()) or None
         logger.error(
             "normalize failed exit=%s stderr=%s",
             result.returncode,
-            (result.stderr or result.stdout).strip(),
+            diagnostic or "",
         )
         raise TranscriptionError(
             Stage.NORMALIZE,
             "FFmpeg normalization failed",
             exit_code=result.returncode,
+            diagnostic=diagnostic,
         )
     if not output_path.is_file() or output_path.stat().st_size <= 0:
         raise TranscriptionError(

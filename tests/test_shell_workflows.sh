@@ -350,6 +350,7 @@ assert_contains "does not start transcription" "Transcription was not started" "
 transcript_count="$(find "${REC}/records" -name 'meeting_*.txt' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "no transcript created after ffmpeg failure" "0" "$transcript_count"
 assert_contains "delegates to python core" "src.transcription.cli" "$(grep -n 'src.transcription.cli' "${REC}/project/scripts/record-meeting.sh" || true)"
+assert_contains "uses streaming subprocess mode" "--stream-subprocess" "$(cat "${REC}/project/scripts/record-meeting.sh")"
 if ! grep -E '^[[:space:]]*"?\$\{?WHISPER_CLI\}?"?' "${REC}/project/scripts/record-meeting.sh" >/dev/null; then
     echo "  PASS: record-meeting.sh does not exec whisper-cli directly"
     PASS=$((PASS + 1))
@@ -447,6 +448,7 @@ status=$?
 set -e
 assert_eq "core failure exit status" "1" "$status"
 assert_contains "core failure message" "Transcription failed" "$out"
+assert_contains "core failure surfaces whisper diagnostic" "simulated whisper-cli failure" "$out"
 assert_not_contains "core failure does not claim success" "Transcription complete" "$out"
 wav_count="$(find "${REC_FAIL}/records" -name 'meeting_*.wav' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "keeps wav after core failure" "1" "$wav_count"

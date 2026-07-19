@@ -100,6 +100,7 @@ PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m src.transcriptio
     --threads "$THREADS" \
     --outputs "txt,srt" \
     --no-normalize \
+    --stream-subprocess \
     --ffmpeg ffmpeg
 STATUS=$?
 set -e

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from .subprocess_runner import SubprocessRunner
+from .subprocess_runner import SubprocessRunner, bounded_tail
 from .types import ArtifactKind, Stage, TranscriptionError
 
 logger = logging.getLogger(__name__)
@@ -78,13 +78,15 @@ def run_whisper(
             cause=exc,
         ) from exc
     if result.returncode != 0:
+        diagnostic = bounded_tail((result.stderr or result.stdout).strip()) or None
         logger.error(
             "whisper-cli failed exit=%s stderr=%s",
             result.returncode,
-            (result.stderr or result.stdout).strip(),
+            diagnostic or "",
         )
         raise TranscriptionError(
             Stage.TRANSCRIBE,
             "whisper-cli transcription failed",
             exit_code=result.returncode,
+            diagnostic=diagnostic,
         )
