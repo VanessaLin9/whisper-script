@@ -250,6 +250,17 @@ PYTHONPATH=. python3 -m src.workflow \
 
 結果會寫入該資料夾下的 `transcripts/`（legacy `segment_NNN.txt/.srt`）。逐段轉錄已委派給共用 `src.transcription` core（TXT + SRT、不做二次 normalize）；segment 發現／排序、partial success 與 `failed_segments.log` 仍由 shell 負責。此流程尚未改用 meeting workspace。
 
+### 準備逐字稿供 LLM 清洗
+
+先以 deterministic preparer 整理 Whisper 的碎片行，再把 `_prepared.txt` 交給 LLM 做語意級清洗：
+
+```bash
+python3 -m src.postprocessing.preparer \
+  /path/to/meeting_transcription.txt
+```
+
+預設輸出 `<stem>_prepared.txt` 與對應的 `.manifest.json`。這一步只正規化空白、移除相鄰且完全相同的片段，並將碎片組成定長段落；不修正術語、不猜測句意，也不覆寫來源。若輸出已存在會 fail closed；確認後可用 `--force` 明確取代。可用 `--paragraph-chars 320` 調整段落目標長度。
+
 ## 疑難排解
 
 ### `.env` 找不到
