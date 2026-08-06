@@ -259,6 +259,33 @@ python3 -m src.postprocessing.preparer \
   /path/to/meeting_transcription.txt
 ```
 
+### 互動式會議 Pipeline controller
+
+使用 controller 依序選擇會議、提示詞與流程。第一版會執行 deterministic 預清洗，並在會議資料夾寫入可重試的 pipeline state；語意清洗與 Notion 寫入仍交由 `clean-meeting-transcripts` 與 `standup-worklog` skill，避免 script 自行猜測內容或未確認就寫入 Notion。
+
+```bash
+PYTHONPATH=. python3 -m src.meeting_pipeline
+```
+
+也可用參數跳過互動選擇：
+
+```bash
+PYTHONPATH=. python3 -m src.meeting_pipeline \
+  --date 2026-08-06 \
+  --meeting 11 \
+  --prompt-profile inno \
+  --mode full \
+  --yes
+```
+
+提示詞選項目前包含 `inno`、`whisper` 與 `new`（尚未建立）。流程選項為：
+
+- `full`：預清洗，接著交接給清洗與 Notion skills
+- `preclean`：只執行預清洗
+- `handoff`：不預清洗，只產生交接 state
+
+輸出會寫在該會議資料夾的 `<stem>_pipeline_state.json`。已有 state 時預設 fail closed，確認要刷新才加 `--force-state`。
+
 預設輸出 `<stem>_prepared.txt` 與對應的 `.manifest.json`。這一步只正規化空白、移除相鄰且完全相同的片段，並將碎片組成定長段落；不修正術語、不猜測句意，也不覆寫來源。若輸出已存在會 fail closed；確認後可用 `--force` 明確取代。可用 `--paragraph-chars 320` 調整段落目標長度。
 
 ## 疑難排解
