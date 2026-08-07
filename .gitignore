@@ -57,6 +57,9 @@ outputs/
 logs/
 tmp/
 
+# Local prompt notes may contain private domain knowledge. Never commit them.
+.local/
+
 
 # Directories potentially created on remote AFP share
 .AppleDB

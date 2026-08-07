@@ -48,6 +48,7 @@ class MeetingPipelineTests(unittest.TestCase):
         self.assertTrue(state_path.exists())
         self.assertEqual(state["prompt_profile"]["name"], "inno")
         self.assertEqual(state["pipeline"]["next_stage"], "clean_transcript")
+        self.assertEqual(state["artifacts"]["cleaning_input"], str(candidate.prepared))
         payload = json.loads(state_path.read_text(encoding="utf-8"))
         self.assertEqual(payload["handoff"]["clean_skill"], "clean-meeting-transcripts")
 

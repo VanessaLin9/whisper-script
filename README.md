@@ -261,6 +261,10 @@ python3 -m src.postprocessing.preparer \
 
 ### 互動式會議 Pipeline controller
 
+修改 pipeline 前，先閱讀 [`docs/工作契約流程.md`](docs/工作契約流程.md)。它定義每個 stage 的輸入/輸出、不可覆蓋的原始產物、state 欄位、Notion 交接與未來 API adapter 的接入界線。
+
+會議記錄的格式、議題 coverage、決策／提案分類、owner 證據規則與未來 LLM prompt JSON 契約，另見 [`docs/meeting-summary-spec.md`](docs/meeting-summary-spec.md)。
+
 使用 controller 依序選擇會議、提示詞與流程。第一版會執行 deterministic 預清洗，並在會議資料夾寫入可重試的 pipeline state；語意清洗與 Notion 寫入仍交由 `clean-meeting-transcripts` 與 `standup-worklog` skill，避免 script 自行猜測內容或未確認就寫入 Notion。
 
 ```bash
@@ -285,6 +289,18 @@ PYTHONPATH=. python3 -m src.meeting_pipeline \
 - `handoff`：不預清洗，只產生交接 state
 
 輸出會寫在該會議資料夾的 `<stem>_pipeline_state.json`。已有 state 時預設 fail closed，確認要刷新才加 `--force-state`。
+
+### 私有提示詞筆記同步
+
+提示詞的完整內容與 domain 詞彙不放在 repository。請先閱讀
+[`docs/meeting-pipeline-maintenance.md`](docs/meeting-pipeline-maintenance.md)，完成 Notion prompt note 同步：
+
+```bash
+export NOTION_TOKEN='***'
+PYTHONPATH=. python3 scripts/sync_prompt_notes.py
+```
+
+同步結果位於 gitignored 的 `.local/prompt_notes/`。下次啟動 meeting pipeline 時，提示詞選單會使用本機 Markdown front matter 的 `title` 顯示；若尚未同步，仍會使用 tracked registry 的 fallback metadata。完整 prompt 檔案不可提交到 GitHub。
 
 預設輸出 `<stem>_prepared.txt` 與對應的 `.manifest.json`。這一步只正規化空白、移除相鄰且完全相同的片段，並將碎片組成定長段落；不修正術語、不猜測句意，也不覆寫來源。若輸出已存在會 fail closed；確認後可用 `--force` 明確取代。可用 `--paragraph-chars 320` 調整段落目標長度。
 

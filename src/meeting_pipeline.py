@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from src.postprocessing.preparer import prepare_file
+from src.prompt_profiles import PROMPT_PROFILES
 
 
 DEFAULT_MEETING_ROOT = Path("/Users/user/MeetingRecords")
@@ -27,21 +28,6 @@ FOLDER_PATTERN = re.compile(
 SRT_TIMESTAMP_PATTERN = re.compile(
     r"^\d{2}:\d{2}:\d{2},\d{3}\s+-->\s+(\d{2}:\d{2}:\d{2},\d{3})$"
 )
-
-PROMPT_PROFILES: dict[str, dict[str, str]] = {
-    "inno": {
-        "label": "inno（Inno Group／AI Team）",
-        "source": "39ddf30c-c71c-81b6-a658-f0ec07fd7e36",
-    },
-    "whisper": {
-        "label": "whisper（土木相關）",
-        "source": "whisper-3a3df30c-c71c-8151-95bad39aeb1eb6e1",
-    },
-    "new": {
-        "label": "尚未建立（只產生待補提示詞的 state）",
-        "source": "not-registered",
-    },
-}
 
 PIPELINE_MODES = {
     "full": "預清洗 + 產生技能交接 state",
@@ -250,12 +236,14 @@ def build_state(candidate: MeetingCandidate, prompt_profile: str, mode: str) -> 
             "name": prompt_profile,
             "label": PROMPT_PROFILES[prompt_profile]["label"],
             "source": PROMPT_PROFILES[prompt_profile]["source"],
+            "local_path": PROMPT_PROFILES[prompt_profile].get("local_path"),
         },
         "artifacts": {
             "raw_transcript": str(candidate.raw_transcript),
             "srt": str(candidate.srt) if candidate.srt else None,
             "prepared": str(candidate.prepared),
             "cleaned": str(candidate.cleaned),
+            "cleaning_input": str(candidate.prepared if prepared_done else candidate.raw_transcript),
         },
         "pipeline": {
             "mode": mode,
