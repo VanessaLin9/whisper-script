@@ -108,6 +108,10 @@ TRANSCRIPTS_DIR=$HOME/MeetingRecords/Transcripts
 # macOS AVFoundation 麥克風裝置
 MIC_DEVICE=:0
 
+# 即時錄音的 raw capture 設定；轉錄前會另產生 16 kHz mono 副本
+RECORDING_SAMPLE_RATE=48000
+RECORDING_CHANNELS=1
+
 # 中文為主、可夾雜英文的多語言轉錄
 DEFAULT_LANGUAGE="zh"
 PREFERRED_MODEL="small"
@@ -138,7 +142,7 @@ ffmpeg -f avfoundation -list_devices true -i ""
 ```text
 YYYY-MM-DD_HHMM_<safe-stem>/
 ├── source_meta.json
-├── <safe-stem>.<ext>                 # 僅 managed 來源（Drive 下載）會保存音檔副本
+├── <safe-stem>.<ext>                 # 即時錄音／managed 來源的 raw 音檔
 ├── <safe-stem>_norm16k.wav           # normalize 開啟時
 ├── <safe-stem>_transcription.txt
 ├── <safe-stem>_transcription.srt
@@ -149,6 +153,7 @@ YYYY-MM-DD_HHMM_<safe-stem>/
 來源 ownership：
 
 - **本機音訊（local reference）**：不複製、不移動原始檔；Core 直接讀取原路徑；`retained_in_workspace=false`
+- **即時錄音（record-meeting.sh）**：先以 `RECORDING_SAMPLE_RATE` 保存 raw PCM WAV，再複製到 meeting workspace；Core 從 workspace raw 音檔衍生 normalized input；`retained_in_workspace=true`
 - **公開 Drive 下載（managed download）**：下載後安全寫入 workspace，原始音檔與 raw transcript 會保留；`retained_in_workspace=true`
 - 輸出衝突採 **fail closed**：既有 audio／artifacts 不會被覆寫
 
@@ -164,15 +169,7 @@ YYYY-MM-DD_HHMM_<safe-stem>/
 
 按 `Ctrl+C` 停止錄音，腳本會接著執行轉錄。
 
-麥克風擷取與 Ctrl+C 仍由 shell 負責；轉錄已委派給共用 `src.transcription` core（TXT + SRT，錄音已是 mono 16 kHz，不再二次 normalize）。此腳本**尚未**遷移到 Output Manager meeting workspace，仍寫入 `MEETING_RECORDS_DIR` 扁平 legacy 檔名：
-
-```text
-MEETING_RECORDS_DIR/
-├── meeting_YYYYMMDD_HHMMSS.wav
-├── meeting_YYYYMMDD_HHMMSS.txt
-├── meeting_YYYYMMDD_HHMMSS.srt
-└── ffmpeg_YYYYMMDD_HHMMSS.log
-```
+麥克風擷取與 Ctrl+C 仍由 shell 負責；轉錄已委派給共用 `src.transcription` core。腳本現在先以 48 kHz（可由 `.env` 調整）錄製 raw PCM WAV，接著建立 timestamped meeting workspace，將 raw 音檔保留在 workspace，並由共用 core 產生 16 kHz mono normalized WAV、TXT、SRT 與 JSON。成功後只會清理本次執行的 `.incoming` 暫存副本；失敗時保留暫存音檔與 log 供重試。
 
 ### 轉錄既有本機音訊
 

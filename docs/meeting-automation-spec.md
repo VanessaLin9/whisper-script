@@ -113,9 +113,13 @@ The current controller discovers this format and reads one raw `<stem>_transcrip
 
 Never overwrite an existing artifact by default. Use an explicit force/refresh action and retain enough state to understand what changed.
 
-### Legacy compatibility
+### Recording compatibility
 
-`record-meeting.sh` currently writes older flat artifacts, while `transcribe-english.sh` creates the timestamped workspace expected by the controller. A migration/compatibility layer is required before the one-click flow can treat both entry points identically.
+`record-meeting.sh` now captures a higher-rate raw PCM WAV in a staging directory,
+retains a copy in the timestamped meeting workspace, and derives the 16 kHz mono
+Whisper input from that raw file. `transcribe-english.sh` still supports existing
+local-reference files without copying them, so both entry points remain
+compatible while the raw-retention policy is introduced incrementally.
 
 ## 6. Required user inputs and UX
 

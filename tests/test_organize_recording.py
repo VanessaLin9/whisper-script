@@ -61,6 +61,34 @@ class OrganizeRecordingTests(unittest.TestCase):
                 "2026-07-17_1500_2026-07-17_1500_demo",
             )
 
+    def test_retain_source_copies_audio_into_workspace_and_updates_metadata(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "meeting_capture.wav"
+            source.write_bytes(b"raw-audio")
+            detected = MODULE.RecordingTime(
+                datetime(2026, 7, 17, 15, 0), "test", False
+            )
+            with patch.object(MODULE, "detect_recording_time", return_value=detected):
+                result = MODULE.prepare_recording(
+                    source,
+                    root / "records",
+                    assume_yes=True,
+                    retain_source=True,
+                )
+
+            meeting_dir = Path(result["meeting_dir"])
+            retained = meeting_dir / "meeting_capture.wav"
+            self.assertEqual(Path(result["audio_file"]).resolve(), retained.resolve())
+            self.assertTrue(retained.is_file())
+            self.assertEqual(retained.read_bytes(), b"raw-audio")
+            self.assertTrue(source.exists())
+            metadata = json.loads(
+                (meeting_dir / "source_meta.json").read_text(encoding="utf-8")
+            )
+            self.assertTrue(metadata["retained_in_workspace"])
+            self.assertEqual(metadata["audio_path_for_core"], str(retained))
+
     def test_time_prompt_keeps_stdout_json_clean(self):
         """Shell captures organizer stdout as JSON; prompts must stay on stderr."""
         with tempfile.TemporaryDirectory() as temp:
