@@ -66,6 +66,9 @@ class TranscribeRequest:
     normalize: bool = True
     keep_normalized: bool = True
     ffmpeg: Path = Path("ffmpeg")
+    # Optional initial prompt passed verbatim to whisper.cpp's --prompt flag.
+    # Keep this short: whisper.cpp limits the prompt by the model context.
+    prompt: str | None = None
     # Optional whisper --output-file basename (single filename component).
     # When None, artifacts use the default ``{stem}_transcription.*`` layout.
     # Legacy shell workflows may pass the stem itself (e.g. meeting_<ts>,

@@ -29,6 +29,11 @@ echo "    Preferred model: $PREFERRED_MODEL"
 echo "    Language: $DEFAULT_LANGUAGE"
 echo "    Threads: $THREADS"
 echo "    Default outputs: $DEFAULT_OUTPUTS"
+if [ -n "${WHISPER_PROMPT:-}" ]; then
+    echo "    Initial prompt: configured (${#WHISPER_PROMPT} chars)"
+else
+    echo "    Initial prompt: none"
+fi
 echo
 echo "[*] Using model: $(basename "$MODEL_FILE")"
 
@@ -86,17 +91,24 @@ OUT_BASE="${MEETING_DIR}/${stem}_transcription"
 echo "[*] Starting transcription with $(basename "$MODEL_FILE")..."
 echo "    This may take a while for long recordings..."
 
+TRANSCRIBE_ARGS=(
+    --audio "$IN"
+    --output-dir "$MEETING_DIR"
+    --stem "$stem"
+    --language "$DEFAULT_LANGUAGE"
+    --model "$PREFERRED_MODEL"
+    --model-path "$MODEL_FILE"
+    --whisper-cli "$WHISPER_CLI"
+    --threads "$THREADS"
+    --outputs "$DEFAULT_OUTPUTS"
+)
+if [ -n "${WHISPER_PROMPT:-}" ]; then
+    TRANSCRIBE_ARGS+=(--prompt "$WHISPER_PROMPT")
+fi
+
 set +e
 PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m src.transcription.cli \
-    --audio "$IN" \
-    --output-dir "$MEETING_DIR" \
-    --stem "$stem" \
-    --language "$DEFAULT_LANGUAGE" \
-    --model "$PREFERRED_MODEL" \
-    --model-path "$MODEL_FILE" \
-    --whisper-cli "$WHISPER_CLI" \
-    --threads "$THREADS" \
-    --outputs "$DEFAULT_OUTPUTS" \
+    "${TRANSCRIBE_ARGS[@]}" \
     --normalize \
     --keep-normalized \
     --ffmpeg ffmpeg

@@ -48,6 +48,24 @@ class TranscriptionCliTests(unittest.TestCase):
         self.assertTrue(request.keep_normalized)
         self.assertIsNone(request.artifact_basename)
 
+    def test_request_from_args_maps_prompt(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(
+            [
+                "--audio", "/tmp/a.wav",
+                "--output-dir", "/tmp/out",
+                "--stem", "meeting",
+                "--language", "zh",
+                "--model", "small",
+                "--model-path", "/tmp/model.bin",
+                "--whisper-cli", "/tmp/whisper-cli",
+                "--threads", "4",
+                "--prompt", "Inno Group AI Team; Chronos; Athena",
+            ]
+        )
+        request = request_from_args(args)
+        self.assertEqual(request.prompt, "Inno Group AI Team; Chronos; Athena")
+
     def test_request_from_args_maps_artifact_basename(self) -> None:
         parser = build_parser()
         args = parser.parse_args(

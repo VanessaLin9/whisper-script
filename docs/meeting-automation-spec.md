@@ -141,8 +141,14 @@ For the desktop tool, these become a compact setup screen or defaults with an ex
 - Pass an optional vocabulary/prompt to whisper.cpp for project names and proper nouns (for example, Greek-mythology project names).
 - Write a timestamped workspace and a transcript with timeline information when available.
 - Treat whisper prompt hints as recognition aids, not authoritative facts.
-
-Exact whisper.cpp flags and vocabulary source format remain **TODO** and should be tested against the installed model/runtime.
+- The local adapter passes an optional short initial prompt through whisper.cpp's
+  `--prompt` flag. It is intended for a compact vocabulary/context hint, not for
+  transcript-cleaning instructions or a full domain prompt.
+- The full selected prompt note remains the cleaner's input; the ASR prompt is a
+  separate, deliberately shorter artifact such as `.local/prompt_notes/inno_asr_short.txt`.
+- Prompt variants must be evaluated against a no-prompt baseline on the same audio
+  before being enabled as a profile default. A prompt that causes echo, repetition,
+  over-merging, or forced wrong terms must be rejected.
 
 ### 7.2 Deterministic pre-cleaning
 

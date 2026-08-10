@@ -155,6 +155,7 @@ def transcribe(
             threads=request.threads,
             output_base=base,
             outputs=request.outputs,
+            prompt=request.prompt,
             runner=active_runner,
             cancellation=cancellation,
         )

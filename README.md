@@ -179,6 +179,8 @@ YYYY-MM-DD_HHMM_<safe-stem>/
 
 依提示輸入或拖入音訊路徑。雖然檔名仍保留舊名稱 `transcribe-english.sh`，目前程式已使用多語言模型，預設以中文為主要語言。
 
+若要做 ASR 詞彙提示，可在 `.env` 暫時設定短的 `WHISPER_PROMPT`；它會傳給 whisper.cpp 的 `--prompt`，只應放語境與專有名詞，不要放完整清洗規則或祈使句。啟用前先和同一音檔的無提示詞結果比較，確認沒有回聲或重複。
+
 腳本會先確認會議時間（檔名中的 `YYYY-MM-DD_HHMM`、metadata、檔案時間或手動輸入），再透過 Output Manager 建立 meeting workspace。
 
 **原始錄音不會被複製、移動或改名。** Core 以 reference 方式讀取原檔；資料夾名稱含時間前綴，artifact 檔名使用 `<safe-stem>`（不再重複加時間前綴）：
