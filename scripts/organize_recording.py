@@ -189,6 +189,9 @@ def retain_source_in_workspace(
     Existing local-reference workflows intentionally keep their historical
     no-copy behavior.  Recording workflows opt into this function so the raw
     capture remains available beside the normalized transcription input.
+
+    Ownership 契約（PR #10）：僅 ``--retain-source`` 才複製並將
+    ``retained_in_workspace`` 設為 True；預設 local-reference 仍不複製原檔。
     """
     source = source.expanduser().resolve()
     destination = workspace_dir / f"{stem}{source.suffix.lower()}"

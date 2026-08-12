@@ -68,6 +68,8 @@ class TranscribeRequest:
     ffmpeg: Path = Path("ffmpeg")
     # Optional initial prompt passed verbatim to whisper.cpp's --prompt flag.
     # Keep this short: whisper.cpp limits the prompt by the model context.
+    # ASR 短提示詞契約（PR #10）：只放語境／專有名詞；與 cleaner 完整 prompt note 分離，
+    # 勿把清洗指令或整份 domain prompt 塞進來。
     prompt: str | None = None
     # Optional whisper --output-file basename (single filename component).
     # When None, artifacts use the default ``{stem}_transcription.*`` layout.

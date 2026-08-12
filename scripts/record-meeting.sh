@@ -15,6 +15,7 @@ source "${SCRIPT_DIR}/lib/common.sh"
 load_project_env "${REPO_ROOT}/.env"
 resolve_workflow_paths
 
+# Raw capture 預設 48 kHz；Whisper 輸入另由 core normalize 成 16 kHz mono（PR #10）。
 AUDIO_CHANNELS="${RECORDING_CHANNELS:-1}"
 AUDIO_SAMPLE_RATE="${RECORDING_SAMPLE_RATE:-48000}"
 
@@ -27,6 +28,7 @@ echo "    Language: $DEFAULT_LANGUAGE"
 echo "    Threads: $THREADS"
 echo
 
+# Staging 失敗保留；成功後只清本次 .incoming 暫存（PR #10）。
 STAGING_DIR="${MEETING_RECORDS_DIR}/.incoming"
 mkdir -p "$STAGING_DIR"
 

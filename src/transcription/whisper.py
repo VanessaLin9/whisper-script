@@ -35,6 +35,7 @@ def build_whisper_command(
         "--threads",
         str(threads),
     ]
+    # 空字串視為未設定，省略 --prompt，維持無提示詞基線（PR #10）。
     if prompt:
         command.extend(["--prompt", prompt])
     command.extend(["--output-file", str(output_base)])
