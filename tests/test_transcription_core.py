@@ -246,6 +246,36 @@ class TranscriptionCoreTests(unittest.TestCase):
         self.assertIn("--output-json", command)
         self.assertIn("--output-txt", command)
 
+    def test_build_whisper_command_includes_initial_prompt(self) -> None:
+        command = build_whisper_command(
+            whisper_cli=Path("whisper-cli"),
+            model_path=Path("model.bin"),
+            audio_path=Path("a.wav"),
+            language="zh",
+            threads=4,
+            output_base=Path("out/base"),
+            outputs=frozenset({ArtifactKind.TXT}),
+            prompt="Inno Group AI Team; Chronos; Athena; GitLab",
+        )
+        self.assertIn("--prompt", command)
+        self.assertEqual(
+            command[command.index("--prompt") + 1],
+            "Inno Group AI Team; Chronos; Athena; GitLab",
+        )
+
+    def test_build_whisper_command_omits_empty_prompt(self) -> None:
+        command = build_whisper_command(
+            whisper_cli=Path("whisper-cli"),
+            model_path=Path("model.bin"),
+            audio_path=Path("a.wav"),
+            language="zh",
+            threads=4,
+            output_base=Path("out/base"),
+            outputs=frozenset({ArtifactKind.TXT}),
+            prompt="",
+        )
+        self.assertNotIn("--prompt", command)
+
     def test_runner_raise_during_normalize_keeps_normalize_stage(self) -> None:
         runner = FakeRunner(raise_on_normalize=FileNotFoundError("ffmpeg missing"))
 

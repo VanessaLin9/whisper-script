@@ -9,7 +9,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -130,7 +132,10 @@ def ask_for_recording_time(detected: RecordingTime) -> RecordingTime:
 
 
 def prepare_recording(
-    audio_file: Path, records_dir: Path, assume_yes: bool = False
+    audio_file: Path,
+    records_dir: Path,
+    assume_yes: bool = False,
+    retain_source: bool = False,
 ) -> dict[str, str]:
     audio_file = audio_file.expanduser().resolve()
     records_dir = records_dir.expanduser().resolve()
@@ -154,9 +159,17 @@ def prepare_recording(
     plan = plan_workspace(records_dir, source, detected.value)
     workspace = create_workspace(plan)
 
+    if retain_source:
+        audio_file = retain_source_in_workspace(
+            workspace.workspace_dir,
+            workspace.transcript_stem,
+            audio_file,
+            workspace.metadata_path,
+        )
+
     return {
         "meeting_dir": str(workspace.workspace_dir),
-        "audio_file": str(workspace.audio_path),
+        "audio_file": str(audio_file),
         "stem": workspace.transcript_stem,
         "recorded_at": detected.value.isoformat(timespec="minutes"),
         "date_source": detected.source,
@@ -165,14 +178,78 @@ def prepare_recording(
     }
 
 
+def retain_source_in_workspace(
+    workspace_dir: Path,
+    stem: str,
+    source: Path,
+    metadata_path: Path,
+) -> Path:
+    """Copy a captured source into its meeting workspace and update metadata.
+
+    Existing local-reference workflows intentionally keep their historical
+    no-copy behavior.  Recording workflows opt into this function so the raw
+    capture remains available beside the normalized transcription input.
+
+    Ownership 契約（PR #10）：僅 ``--retain-source`` 才複製並將
+    ``retained_in_workspace`` 設為 True；預設 local-reference 仍不複製原檔。
+    """
+    source = source.expanduser().resolve()
+    destination = workspace_dir / f"{stem}{source.suffix.lower()}"
+    if source != destination:
+        temporary = destination.with_name(
+            f".{destination.name}.tmp-{os.getpid()}"
+        )
+        try:
+            shutil.copy2(source, temporary)
+            os.replace(temporary, destination)
+        except OSError:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            destination.unlink(missing_ok=True)
+            raise
+
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["audio_path_for_core"] = str(destination)
+    metadata["retained_in_workspace"] = True
+    metadata["source_retained_path"] = str(destination)
+    temporary_metadata = metadata_path.with_name(
+        f".{metadata_path.name}.tmp-{os.getpid()}"
+    )
+    try:
+        temporary_metadata.write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        os.replace(temporary_metadata, metadata_path)
+    except OSError:
+        try:
+            temporary_metadata.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return destination
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("audio_file", type=Path)
     parser.add_argument("--records-dir", required=True, type=Path)
     parser.add_argument("--yes", action="store_true", help="accept detected time")
+    parser.add_argument(
+        "--retain-source",
+        action="store_true",
+        help="copy the source audio into the meeting workspace",
+    )
     args = parser.parse_args()
     try:
-        result = prepare_recording(args.audio_file, args.records_dir, args.yes)
+        result = prepare_recording(
+            args.audio_file,
+            args.records_dir,
+            args.yes,
+            args.retain_source,
+        )
     except (OSError, ValueError, WorkspaceError) as exc:
         print(f"[!] {exc}", file=sys.stderr)
         return 1

@@ -22,6 +22,7 @@ def build_whisper_command(
     threads: int,
     output_base: Path,
     outputs: frozenset[ArtifactKind],
+    prompt: str | None = None,
 ) -> list[str]:
     command = [
         str(whisper_cli),
@@ -33,9 +34,11 @@ def build_whisper_command(
         language,
         "--threads",
         str(threads),
-        "--output-file",
-        str(output_base),
     ]
+    # 空字串視為未設定，省略 --prompt，維持無提示詞基線（PR #10）。
+    if prompt:
+        command.extend(["--prompt", prompt])
+    command.extend(["--output-file", str(output_base)])
     flag_map = {
         ArtifactKind.TXT: "--output-txt",
         ArtifactKind.SRT: "--output-srt",
@@ -58,6 +61,7 @@ def run_whisper(
     outputs: frozenset[ArtifactKind],
     runner: SubprocessRunner,
     cancellation: CancellationToken | None = None,
+    prompt: str | None = None,
 ) -> None:
     command = build_whisper_command(
         whisper_cli=whisper_cli,
@@ -67,6 +71,7 @@ def run_whisper(
         threads=threads,
         output_base=output_base,
         outputs=outputs,
+        prompt=prompt,
     )
     logger.info("transcribe stage starting: %s", output_base)
     try:

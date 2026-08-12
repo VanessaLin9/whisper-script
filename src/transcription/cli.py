@@ -62,6 +62,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--whisper-cli", required=True, type=Path)
     parser.add_argument("--threads", required=True, type=int)
     parser.add_argument(
+        "--prompt",
+        default=None,
+        help="Optional short initial prompt passed to whisper.cpp (not a full transcript)",
+    )
+    parser.add_argument(
         "--outputs",
         default=default_outputs_arg(),
         type=_parse_outputs,
@@ -114,6 +119,7 @@ def request_from_args(args: argparse.Namespace) -> TranscribeRequest:
         keep_normalized=args.keep_normalized,
         ffmpeg=args.ffmpeg,
         artifact_basename=args.artifact_basename,
+        prompt=args.prompt,
     )
 
 
