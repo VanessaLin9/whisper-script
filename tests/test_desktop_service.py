@@ -178,6 +178,183 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(len(self.service.meetings()["meetings"]), 1)
         self.assertTrue(Path(read_json(folder / "source_meta.json")["audio_path_for_core"]).exists())
 
+    def edit(self, folder, kind, text):
+        preview = self.service.preview(str(folder), kind)
+        return self.service.save_edit(str(folder), kind, preview["token"], text=text)
+
+    def timeline(self, folder):
+        path = self.service.paths(folder)["srt"]
+        original = "7\r\n00:00:01,250 --> 00:00:04,500\r\n第一段 API 名稱\r\n\r\n9\r\n00:00:05,000 --> 00:00:08,990\r\n第二段\r\n多行字幕\r\n"
+        path.write_bytes(original.encode("utf-8"))
+        return path, path.read_bytes()
+
+    def test_rename_updates_display_and_handoff_without_renaming_files(self):
+        folder = self.prepared()
+        original_files = sorted(p.name for p in folder.iterdir())
+        original_hashes = {k: digest(p) for k, p in self.service.paths(folder).items() if p.is_file()}
+        self.service.rename(str(folder), "新的 AI 會議名稱", self.service.row(folder)["title"])
+        self.assertEqual(self.service.meetings()["meetings"][0]["title"], "新的 AI 會議名稱")
+        self.assertEqual(original_files, sorted(p.name for p in folder.iterdir()))
+        self.assertEqual(original_hashes, {k: digest(p) for k, p in self.service.paths(folder).items() if p.is_file()})
+        self.assertIn("會議：新的 AI 會議名稱", self.service.handoff(str(folder), "test")["text"])
+        with self.assertRaisesRegex(ValueError, "已在別處更新"):
+            self.service.rename(str(folder), "過期名稱", "中文 AI 會議")
+        for invalid in ["  ", "不合法\n名稱", "字" * 201]:
+            with self.assertRaises(ValueError): self.service.rename(str(folder), invalid, "新的 AI 會議名稱")
+
+    def test_corrected_text_survives_restart_and_is_used_for_handoff(self):
+        folder = self.prepared()
+        paths = self.service.paths(folder)
+        before = {k: digest(p) for k, p in paths.items() if p.is_file()}
+        text = "人工修正 Athena API 名稱，保留繁體中文。"
+        result = self.edit(folder, "prepared", text)
+        self.assertEqual(result["kind"], "corrected")
+        self.assertTrue(result["meeting"]["corrected"])
+        restarted = DesktopService(self.repo, self.service.settings)
+        self.assertEqual(restarted.preview(str(folder), "corrected")["text"], text)
+        packet = restarted.handoff(str(folder), "test")
+        self.assertIn(text, packet["text"])
+        self.assertEqual(before, {k: digest(p) for k, p in paths.items() if p.is_file()})
+
+    def test_each_correction_preserves_previous_version(self):
+        folder = self.prepared()
+        self.edit(folder, "raw", "第一次訂正 API")
+        first = self.service.preview(str(folder), "corrected")
+        self.edit(folder, "corrected", "第二次訂正 API")
+        state = read_json(folder / "desktop_state.json")
+        self.assertEqual(len(state["edit_history"]), 2)
+        self.assertEqual(Path(first["path"]).read_text(), "第一次訂正 API")
+        self.assertEqual(self.service.preview(str(folder), "corrected")["text"], "第二次訂正 API")
+
+    def test_stale_editor_cannot_overwrite_newer_correction(self):
+        folder = self.prepared()
+        opened = self.service.preview(str(folder), "prepared")
+        self.edit(folder, "prepared", "較新的訂正")
+        with self.assertRaisesRegex(ValueError, "已有新版本"):
+            self.service.save_edit(str(folder), "prepared", opened["token"], text="過期修改")
+        self.assertEqual(self.service.preview(str(folder), "corrected")["text"], "較新的訂正")
+
+    def test_srt_text_edits_preserve_every_time_number_and_original_byte(self):
+        folder = self.prepared()
+        original, original_bytes = self.timeline(folder)
+        opened = self.service.preview(str(folder), "srt")
+        edits = [{"id": c["id"], "text": "訂正 " + c["text"]} for c in opened["cues"]]
+        self.service.save_edit(str(folder), "srt", opened["token"], cues=edits)
+        saved = self.service.preview(str(folder), "srt")
+        self.assertEqual(original.read_bytes(), original_bytes)
+        self.assertEqual([(c["number"], c["time"]) for c in opened["cues"]],
+                         [(c["number"], c["time"]) for c in saved["cues"]])
+        self.assertEqual([c["text"] for c in saved["cues"]], [c["text"] for c in edits])
+        packet = self.service.handoff(str(folder), "test")
+        self.assertIn("訂正 第一段 API 名稱", packet["text"])
+        self.assertIn(saved["path"], packet["files"])
+
+    def test_srt_rejects_times_order_counts_and_timestamp_injection(self):
+        folder = self.prepared()
+        path, before = self.timeline(folder)
+        opened = self.service.preview(str(folder), "srt")
+        valid = [{"id": c["id"], "text": c["text"]} for c in opened["cues"]]
+        invalid_sets = [
+            [{**valid[0], "time": "00:00:00,000 --> 99:00:00,000"}, valid[1]],
+            list(reversed(valid)), valid[:1], valid + [valid[0]],
+            [{"id": 0, "text": "新增\n\n99\n00:00:00,000 --> 00:00:01,000\n假字幕"}, valid[1]],
+            [{"id": 0, "text": ""}, valid[1]],
+        ]
+        for cues in invalid_sets:
+            with self.subTest(cues=cues), self.assertRaises(ValueError):
+                self.service.save_edit(str(folder), "srt", opened["token"], cues=cues)
+        with self.assertRaises(ValueError):
+            self.service.save_edit(str(folder), "srt", opened["token"], text=opened["text"])
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse((folder / "manual_revisions").exists())
+
+    def test_bad_srt_remains_readable_but_cannot_be_edited(self):
+        folder = self.prepared()  # Fake SRT intentionally contains just "1".
+        preview = self.service.preview(str(folder), "srt")
+        self.assertFalse(preview["editable"])
+        self.assertTrue(preview["text"])
+        self.assertIn("格式", preview["edit_error"])
+
+    def test_corrected_input_invalidates_old_handoff_and_confirmation(self):
+        folder = self.prepared()
+        self.service.handoff(str(folder), "test")
+        output = self.home / "clean.txt"
+        output.write_text(self.service.preview(str(folder), "prepared")["text"])
+        self.service.import_cleaned(str(folder), str(output))
+        self.service.review(str(folder))
+        self.edit(folder, "prepared", "訂正後內容，有新專有名詞 Athena。")
+        self.assertFalse(self.service.row(folder)["reviewed"])
+        with self.assertRaises(ValueError): self.service.review(str(folder))
+        with self.assertRaises(ValueError): self.service.import_cleaned(str(folder), str(output))
+        with self.assertRaises(ValueError): self.service.handoff(str(folder), "test", summary=True)
+
+    def test_cleaned_manual_edit_requires_new_review_and_summary_uses_it(self):
+        folder = self.prepared()
+        self.service.handoff(str(folder), "test")
+        output = self.home / "clean.txt"
+        output.write_text(self.service.preview(str(folder), "prepared")["text"])
+        self.service.import_cleaned(str(folder), str(output))
+        self.service.review(str(folder))
+        original_path = self.service.paths(folder)["cleaned"]
+        before = original_path.read_bytes()
+        edited = output.read_text() + " 加入人工訂正專有名詞 Athena。"
+        self.edit(folder, "cleaned", edited)
+        self.assertFalse(self.service.row(folder)["reviewed"])
+        self.assertEqual(original_path.read_bytes(), before)
+        self.service.review(str(folder))
+        self.assertIn(edited, self.service.handoff(str(folder), "test", summary=True)["text"])
+
+    def test_new_llm_result_after_input_edit_is_versioned(self):
+        folder = self.prepared()
+        first = self.home / "clean.txt"
+        first.write_text(self.service.preview(str(folder), "prepared")["text"])
+        self.service.handoff(str(folder), "test")
+        self.service.import_cleaned(str(folder), str(first))
+        original = self.service.paths(folder)["cleaned"].read_bytes()
+        self.edit(folder, "prepared", "新的來源內容，新模型名稱與 API。")
+        self.service.handoff(str(folder), "test")
+        first.write_text("新的來源內容，新模型名稱與 API，修正後。")
+        self.service.import_cleaned(str(folder), str(first))
+        self.assertEqual(self.service.paths(folder)["cleaned"].read_bytes(), original)
+        self.assertEqual(self.service.preview(str(folder), "cleaned")["text"], first.read_text())
+        self.service.review(str(folder))
+
+    def test_short_manual_cleaned_is_saved_but_cannot_be_approved(self):
+        folder = self.prepared()
+        cleaned = self.service.paths(folder)["cleaned"]
+        cleaned.write_text(self.service.preview(str(folder), "prepared")["text"])
+        result = self.edit(folder, "cleaned", "短")
+        self.assertTrue(result["warning"])
+        self.assertEqual(self.service.preview(str(folder), "cleaned")["text"], "短")
+        with self.assertRaises(ValueError): self.service.review(str(folder))
+
+    def test_srt_edit_invalidates_previous_cleaning_packet(self):
+        folder = self.prepared()
+        self.timeline(folder)
+        self.service.handoff(str(folder), "test")
+        opened = self.service.preview(str(folder), "srt")
+        edits = [{"id": c["id"], "text": "訂正 " + c["text"]} for c in opened["cues"]]
+        self.service.save_edit(str(folder), "srt", opened["token"], cues=edits)
+        cleaned = self.home / "clean.txt"
+        cleaned.write_text(self.service.preview(str(folder), "prepared")["text"])
+        with self.assertRaises(ValueError): self.service.import_cleaned(str(folder), str(cleaned))
+
+    def test_noop_edit_does_not_invalidate_handoff(self):
+        folder = self.prepared()
+        self.service.handoff(str(folder), "test")
+        text = self.service.preview(str(folder), "prepared")["text"]
+        result = self.edit(folder, "prepared", text)
+        self.assertFalse(result["changed"])
+        self.assertEqual(read_json(folder / "desktop_state.json")["handoff"]["status"], "ready")
+
+    def test_editing_revision_does_not_allow_external_file_tampering(self):
+        folder = self.prepared()
+        self.edit(folder, "prepared", "人工訂正內容")
+        path = Path(self.service.preview(str(folder), "corrected")["path"])
+        path.write_text("外部變更")
+        with self.assertRaisesRegex(ValueError, "外部變更"):
+            self.service.handoff(str(folder), "test")
+
 
 if __name__ == "__main__":
     unittest.main()
