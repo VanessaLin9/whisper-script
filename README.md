@@ -2,7 +2,26 @@
 
 這是一套以 [whisper.cpp](https://github.com/ggml-org/whisper.cpp) 為核心、針對 macOS 設計的會議錄音與轉錄腳本。
 
-目前預設使用多語言 `small` 模型，主要語言設定為中文（`zh`），適合中文為主、夾雜英文專有名詞的會議。請勿改用 `small.en`；`.en` 是英文專用模型，無法可靠處理中文。
+原生 **Meeting Desk** GUI 預設使用多語言 `medium`、中文（`zh`），適合中文為主、夾雜英文專有名詞的會議。既有 CLI 的 `.env.example` 仍以 `small` 為預設。請勿改用 `.en` 模型；它們是英文專用模型，無法可靠處理中文。
+
+## 本機 GUI：Meeting Desk
+
+在 Finder 雙擊根目錄的 **`開啟 Meeting Desk.command`**。第一次會以系統 Swift 編譯原生 App；後續直接啟動。需要 macOS 14+、Xcode Command Line Tools、Python 3.10+，以及原有 FFmpeg / whisper.cpp 環境，不需額外 Python GUI 套件。
+
+1. 從語音備忘錄拖出音檔，再拖進 App（或按「匯入音檔」選檔）。不必先放到 `Transcripts`。
+2. 確認會議名稱與錄音時間。工具保存原始音檔副本，來源不移動、不刪除；同名會議不覆寫。
+3. 按「轉錄並整理」。預設 `medium` + `zh`，輸出 TXT / SRT / JSON，再做 deterministic 預清洗。繁體校正留到 LLM 清洗，不改寫 raw ASR。
+4. 選提示詞，按「準備 LLM 交接」。完整交接內容會複製到剪貼簿，並在 Finder 顯示私有交接檔。可貼到 LLM 或直接上傳檔案；長會議請同時提供會議資料夾的 SRT。
+5. 將 LLM 回傳的完整逐字稿存成 UTF-8 TXT，按「匯入清洗稿」。縮短超過 20% 會擋下，不會覆寫既有稿件。
+6. 切換原始／預清洗／清洗稿檢查內容，再按「已檢查，確認清洗稿」。最後可準備另一份「會議記錄交接」。Notion 尚未自動發布。
+
+左側會列出既有會議；失敗與取消後可回同一場會議續跑。舊 cleaned 檔不會自動算完成：先建立交接、按「重新檢查清洗稿」選擇既有 cleaned TXT，再做內容確認；不會重寫檔案。
+
+設定頁可調整會議資料夾、whisper.cpp 路徑、模型與執行緒，保存至 gitignored `.local/desktop_settings.json`。預設沿用 `.env` 的資料根目錄，但 GUI 模型獨立預設為 `medium`。模型須已存在於 `whisper.cpp/models/ggml-medium.bin`。切換模型只影響之後的新轉錄；切換資料根目錄只切換清單，不移動舊資料。
+
+編譯結果位於 `.local/Meeting Desk.app`，可將它拖到 Dock 保留。這是綁定本機 repo / Python 路徑的 App，不是可攜式安裝包；搬移 repo 後重新執行 `bash scripts/build-desktop.sh`。
+
+實作與狀態契約見 [desktop-gui.md](docs/desktop-gui.md)。此版先以語音備忘錄／音檔匯入為主；內建錄音、Drive GUI、LLM API 和 Notion 發布尚未接入原生介面。
 
 ## 功能
 

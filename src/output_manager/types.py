@@ -16,6 +16,7 @@ class SourceKind(str, Enum):
 
     LOCAL_REFERENCE = "local_reference"
     MANAGED_DOWNLOAD = "managed_download"
+    MANAGED_IMPORT = "managed_import"
     MANAGED_RECORDING = "managed_recording"
 
 

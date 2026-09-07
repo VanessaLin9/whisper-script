@@ -427,13 +427,14 @@ proc = subprocess.Popen(
     stderr=subprocess.STDOUT,
     text=True,
     env=env,
+    start_new_session=True,
 )
 
 wav_ready = False
 for _ in range(50):
     if proc.poll() is not None:
         break
-    if any(records.glob("meeting_*.wav")):
+    if any(records.glob(".incoming/meeting_*.wav")):
         wav_ready = True
         break
     time.sleep(0.1)
@@ -443,7 +444,7 @@ proc.send_signal(signal.SIGINT)
 try:
     out, _ = proc.communicate(timeout=10)
 except subprocess.TimeoutExpired:
-    proc.kill()
+    os.killpg(proc.pid, signal.SIGKILL)
     out, _ = proc.communicate()
     print(out or "")
     print("TIMEOUT", file=sys.stderr)
@@ -474,13 +475,13 @@ transcript_count="$(find "${REC_OK}/records" -name 'meeting_*.txt' 2>/dev/null |
 assert_eq "interrupt path produces transcript" "1" "$transcript_count"
 srt_count="$(find "${REC_OK}/records" -name 'meeting_*.srt' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "interrupt path produces srt" "1" "$srt_count"
-wav_path="$(find "${REC_OK}/records" -name 'meeting_*.wav' | head -n 1)"
-assert_file "legacy wav retained" "$wav_path"
-assert_file "legacy txt basename matches wav stem" "${wav_path%.wav}.txt"
-assert_file "legacy srt basename matches wav stem" "${wav_path%.wav}.srt"
-assert_not_file "no _transcription suffix for recording" "${wav_path%.wav}_transcription.txt"
-assert_not_file "no normalized wav for recording" "${wav_path%.wav}_norm16k.wav"
-assert_not_contains "no false _transcription naming in summary" "_transcription.txt" "$out"
+wav_path="$(find "${REC_OK}/records" -name 'meeting_*.wav' ! -name '*_norm16k.wav' | head -n 1)"
+assert_file "raw wav retained in workspace" "$wav_path"
+assert_file "workspace transcript basename" "${wav_path%.wav}_transcription.txt"
+assert_file "workspace SRT basename" "${wav_path%.wav}_transcription.srt"
+assert_file "workspace JSON artifact" "${wav_path%.wav}_transcription.json"
+assert_file "normalized wav derived from raw" "${wav_path%.wav}_norm16k.wav"
+assert_contains "transcription naming in summary" "_transcription.txt" "$out"
 
 echo
 echo "== record-meeting.sh: core failure keeps wav and does not claim success =="
@@ -497,9 +498,9 @@ assert_eq "core failure exit status" "1" "$status"
 assert_contains "core failure message" "Transcription failed" "$out"
 assert_contains "core failure surfaces whisper diagnostic" "simulated whisper-cli failure" "$out"
 assert_not_contains "core failure does not claim success" "Transcription complete" "$out"
-wav_count="$(find "${REC_FAIL}/records" -name 'meeting_*.wav' 2>/dev/null | wc -l | tr -d ' ')"
+wav_count="$(find "${REC_FAIL}/records" -name 'meeting_*.wav' ! -path '*/.incoming/*' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "keeps wav after core failure" "1" "$wav_count"
-log_count="$(find "${REC_FAIL}/records" -name 'ffmpeg_*.log' 2>/dev/null | wc -l | tr -d ' ')"
+log_count="$(find "${REC_FAIL}/records" -name 'ffmpeg_*.log' ! -path '*/.incoming/*' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "keeps ffmpeg log after core failure" "1" "$log_count"
 txt_count="$(find "${REC_FAIL}/records" -name 'meeting_*.txt' 2>/dev/null | wc -l | tr -d ' ')"
 assert_eq "no success transcript after core failure" "0" "$txt_count"

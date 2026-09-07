@@ -80,7 +80,7 @@ def plan_workspace(
     managed_audio: Path | None = None
     if source.kind == SourceKind.LOCAL_REFERENCE:
         audio_for_core = source_path
-    elif source.kind == SourceKind.MANAGED_DOWNLOAD:
+    elif source.kind in {SourceKind.MANAGED_DOWNLOAD, SourceKind.MANAGED_IMPORT}:
         managed_audio = workspace_dir / f"{safe_stem}{source_path.suffix}"
         audio_for_core = managed_audio
     elif source.kind == SourceKind.MANAGED_RECORDING:
@@ -376,7 +376,7 @@ def create_workspace(plan: WorkspacePlan) -> MeetingWorkspace:
         # Re-check under the exclusive lock before any publish.
         assert_no_plan_conflicts(plan)
 
-        if plan.source.kind == SourceKind.MANAGED_DOWNLOAD:
+        if plan.source.kind in {SourceKind.MANAGED_DOWNLOAD, SourceKind.MANAGED_IMPORT}:
             audio_path = _persist_managed_download(plan, source_path)
             created_paths.append(audio_path)
         elif plan.source.kind == SourceKind.MANAGED_RECORDING:

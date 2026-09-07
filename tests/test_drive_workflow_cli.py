@@ -274,9 +274,9 @@ class ReadmeContractTests(unittest.TestCase):
             "2026-07-17_1500_<safe-stem>_transcription.txt",
             readme,
         )
-        self.assertIn("meeting_YYYYMMDD_HHMMSS.wav", readme)
-        self.assertIn("ffmpeg_YYYYMMDD_HHMMSS.log", readme)
-        self.assertIn("尚未**遷移到 Output Manager", readme)
+        self.assertIn("timestamped meeting workspace", readme)
+        self.assertIn("將 raw 音檔保留在 workspace", readme)
+        self.assertIn("此流程尚未改用 meeting workspace", readme)
 
 
 if __name__ == "__main__":

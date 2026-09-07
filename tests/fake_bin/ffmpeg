@@ -31,7 +31,7 @@ fi
 
 if [ -n "$output" ]; then
     mkdir -p "$(dirname "$output")"
-    if [ "${FFMPEG_SLEEP_FOREVER:-0}" = "1" ]; then
+    if [ "${FFMPEG_SLEEP_FOREVER:-0}" = "1" ] && [[ "$*" == *avfoundation* ]]; then
         # Simulate an in-progress recording until the parent stops us.
         echo "fake recording" >"$output"
         while true; do
