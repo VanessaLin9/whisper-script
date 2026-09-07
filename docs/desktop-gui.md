@@ -11,6 +11,7 @@
 ## 分層
 
 - `desktop/MeetingDesk.swift`：原生視窗、檔案拖曳／選擇、剪貼簿與 Finder、背景 Python Process。
+- `desktop/assets/MeetingDesk.png`：Dock 圖示原稿（A 款：透明外框、純色深綠底、米白聲波與底線，無漸層或陰影）。Build 使用 macOS `sips` / `iconutil` 產生 16–1024 px 的 `.icns`，由 Info.plist 與執行中的 App 載入。更換原稿後啟動入口會自動重建。
 - `src/desktop/service.py`：環境、資料清單、匯入、續跑、交接與品質檢查。沿用 Output Manager、transcription core、preparer。
 - `src/desktop/__main__.py`：JSON transport，SIGTERM / SIGINT 轉成 cancellation token。
 - `scripts/build-desktop.sh`：編譯及本機 ad-hoc codesign；記錄本機 repo 與 Python 絕對路徑於 Info.plist。

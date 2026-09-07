@@ -4,6 +4,16 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PYTHON="${MEETING_PYTHON:-$(command -v python3)}"
 APP="$ROOT/.local/Meeting Desk.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$ROOT/.local/swift-cache"
+ICONSET="$ROOT/.local/MeetingDesk.iconset"
+mkdir -p "$ICONSET"
+for size in 16 32 128 256 512; do
+  sips -z "$size" "$size" "$ROOT/desktop/assets/MeetingDesk.png" \
+    --out "$ICONSET/icon_${size}x${size}.png" >/dev/null
+  retina_size=$((size * 2))
+  sips -z "$retina_size" "$retina_size" "$ROOT/desktop/assets/MeetingDesk.png" \
+    --out "$ICONSET/icon_${size}x${size}@2x.png" >/dev/null
+done
+iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/MeetingDesk.icns"
 xcrun swiftc -parse-as-library -swift-version 5 -O \
   -target "$(uname -m)-apple-macosx14.0" \
   -module-cache-path "$ROOT/.local/swift-cache" \
@@ -15,6 +25,7 @@ plist = {
     "CFBundleName": "Meeting Desk", "CFBundleDisplayName": "Meeting Desk",
     "CFBundleIdentifier": "local.whisper-script.meeting-desk",
     "CFBundleExecutable": "MeetingDesk", "CFBundlePackageType": "APPL",
+    "CFBundleIconFile": "MeetingDesk.icns",
     "CFBundleVersion": "1", "CFBundleShortVersionString": "0.1.0",
     "LSMinimumSystemVersion": "14.0", "NSHighResolutionCapable": True,
     "MeetingRepo": root, "MeetingPython": python,

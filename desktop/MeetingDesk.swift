@@ -524,6 +524,10 @@ struct MeetingDeskApp: App {
             ContentView(desk: desk)
                 .onAppear {
                     AppDelegate.desk = desk
+                    if let iconURL = Bundle.main.url(forResource: "MeetingDesk", withExtension: "icns"),
+                       let icon = NSImage(contentsOf: iconURL) {
+                        NSApp.applicationIconImage = icon
+                    }
                     NSApp.setActivationPolicy(.regular)
                     NSApp.activate(ignoringOtherApps: true)
                     // Developer visual QA: captures only this app's own content view.
