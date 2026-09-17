@@ -21,6 +21,9 @@ class DesktopTests(unittest.TestCase):
         self.home = Path(self.temp.name)
         self.repo = self.home / "repo"
         self.repo.mkdir()
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs/meeting-summary-spec.md").write_text(
+            "# Coverage spec\n\n先建立 coverage map，再產生會議記錄草稿。", encoding="utf-8")
         self.root = self.home / "meetings"
         self.whisper = self.home / "whisper"
         (self.whisper / "models").mkdir(parents=True)
@@ -137,8 +140,18 @@ class DesktopTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.service.handoff(str(folder), "test", summary=True)
         result = self.service.review(str(folder))
         self.assertTrue(result["meeting"]["reviewed"])
-        summary = self.service.handoff(str(folder), "test", summary=True)
-        self.assertIn("不授權寫入 Notion", summary["text"])
+        notes = self.service.handoff(str(folder), "test", summary=True)
+        notes_job = read_job(Path(notes["path"]))
+        self.assertEqual(notes_job["skill"], "standup-worklog")
+        self.assertEqual(Path(notes_job["input"]["path"]), paths["cleaned"])
+        self.assertTrue(Path(notes_job["specification"]["path"]).is_file())
+        notes_request = Path(notes["path"]).read_text(encoding="utf-8")
+        self.assertNotIn("Coverage spec", notes_request)
+        self.assertNotIn(paths["cleaned"].read_text(encoding="utf-8"), notes_request)
+        self.finish_job(folder, "## 會議記錄草稿\n\n- 保留完整內容", stage="notes")
+        imported = self.service.import_notes(str(folder))
+        self.assertTrue(imported["meeting"]["notes"])
+        self.assertIn("會議記錄草稿", self.service.preview(str(folder), "notes")["text"])
         paths["cleaned"].write_text("externally changed", encoding="utf-8")
         self.assertFalse(self.service.row(folder)["reviewed"])
         with self.assertRaises(ValueError): self.service.handoff(str(folder), "test", summary=True)
@@ -327,7 +340,26 @@ class DesktopTests(unittest.TestCase):
         self.assertFalse(self.service.row(folder)["reviewed"])
         self.assertEqual(original_path.read_bytes(), before)
         self.service.review(str(folder))
-        self.assertIn(edited, self.service.handoff(str(folder), "test", summary=True)["text"])
+        notes = self.service.handoff(str(folder), "test", summary=True)
+        job = read_job(Path(notes["path"]))
+        self.assertEqual(Path(job["input"]["path"]), Path(self.service.preview(str(folder), "cleaned")["path"]))
+        self.assertNotIn(edited, Path(notes["path"]).read_text(encoding="utf-8"))
+
+    def test_notes_job_is_separate_and_becomes_stale_after_cleaned_edit(self):
+        folder = self.prepared()
+        prepared = self.service.preview(str(folder), "prepared")["text"]
+        self.service.handoff(str(folder), "test")
+        self.finish_job(folder, prepared)
+        self.service.import_cleaned(str(folder))
+        self.service.review(str(folder))
+        self.service.handoff(str(folder), "test", summary=True)
+        self.finish_job(folder, "## 草稿\n\n完整會議記錄", stage="notes")
+        state = read_json(folder / "desktop_state.json")
+        self.assertNotEqual(state["handoffs"]["clean"]["job_id"], state["handoffs"]["notes"]["job_id"])
+        self.edit(folder, "cleaned", prepared + " 人工補充。")
+        self.assertEqual(read_json(folder / "desktop_state.json")["handoffs"]["notes"]["status"], "stale")
+        with self.assertRaises(ValueError):
+            self.service.import_notes(str(folder))
 
     def test_new_llm_result_after_input_edit_is_versioned(self):
         folder = self.prepared()
