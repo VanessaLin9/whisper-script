@@ -11,6 +11,7 @@ struct Meeting: Identifiable {
     let profile: String
     let raw: Bool
     let prepared: Bool
+    let corrected: Bool
     let cleaned: Bool
     let reviewed: Bool
     init(_ value: [String: Any]) {
@@ -22,9 +23,39 @@ struct Meeting: Identifiable {
         profile = value["profile"] as? String ?? ""
         raw = value["raw"] as? Bool ?? false
         prepared = value["prepared"] as? Bool ?? false
+        corrected = value["corrected"] as? Bool ?? false
         cleaned = value["cleaned"] as? Bool ?? false
         reviewed = value["reviewed"] as? Bool ?? false
     }
+}
+
+struct SubtitleCue: Identifiable {
+    let id: Int
+    let number: String
+    let time: String
+    var text: String
+    init(_ value: [String: Any]) {
+        id = value["id"] as? Int ?? 0
+        number = value["number"] as? String ?? ""
+        time = value["time"] as? String ?? ""
+        text = value["text"] as? String ?? ""
+    }
+}
+
+struct EditDraft: Identifiable {
+    let id = UUID()
+    let folder: String
+    let title: String
+    let kind: String
+    let token: String
+    let text: String
+    let cues: [SubtitleCue]
+}
+
+struct RenameDraft: Identifiable {
+    let id = UUID()
+    let folder: String
+    let title: String
 }
 
 final class Desk: ObservableObject {
@@ -42,6 +73,13 @@ final class Desk: ObservableObject {
     @Published var preview = ""
     @Published var previewPath = ""
     @Published var previewKind = "prepared"
+    @Published var previewToken = ""
+    @Published var previewEditable = false
+    @Published var previewEditError = ""
+    @Published var previewCues: [SubtitleCue] = []
+    @Published var editor: EditDraft?
+    @Published var renameDraft: RenameDraft?
+    @Published var hasUnsavedEdits = false
     @Published var importDraft: [String: String]?
     @Published var showSettings = false
     @Published var showReview = false
@@ -50,7 +88,7 @@ final class Desk: ObservableObject {
     var repo: String { Bundle.main.object(forInfoDictionaryKey: "MeetingRepo") as? String ?? FileManager.default.currentDirectoryPath }
     var python: String { Bundle.main.object(forInfoDictionaryKey: "MeetingPython") as? String ?? "/usr/bin/python3" }
 
-    func call(_ request: [String: Any], done: @escaping ([String: Any]) -> Void = { _ in }) {
+    func call(_ request: [String: Any], failed: ((String) -> Void)? = nil, done: @escaping ([String: Any]) -> Void) {
         guard !busy else { return }
         busy = true
         let process = Process()
@@ -73,8 +111,9 @@ final class Desk: ObservableObject {
             input.fileHandleForWriting.write(try JSONSerialization.data(withJSONObject: request))
             try input.fileHandleForWriting.close()
         } catch {
-            self.error = error.localizedDescription
+            if let failed = failed { failed(error.localizedDescription) } else { self.error = error.localizedDescription }
             busy = false
+            processing = false
             active = nil
             errors.fileHandleForReading.readabilityHandler = nil
             return
@@ -112,7 +151,8 @@ final class Desk: ObservableObject {
                     if final?["cancelled"] as? Bool == true {
                         self.notice = "已取消，音檔已保留。可以稍後繼續。"
                     } else {
-                        self.error = final?["error"] as? String ?? "背景程式未完成（\(process.terminationStatus)）。請重新開啟工具，或檢查 Python 路徑。"
+                        let message = final?["error"] as? String ?? "背景程式未完成（\(process.terminationStatus)）。請重新開啟工具，或檢查 Python 路徑。"
+                        if let failed = failed { failed(message) } else { self.error = message }
                     }
                     if request["action"] as? String == "process" { self.refresh() }
                 }
@@ -137,10 +177,37 @@ final class Desk: ObservableObject {
         }
     }
     func readPreview() {
+        previewEditable = false
+        previewToken = ""
+        previewCues = []
+        previewEditError = ""
         guard let meeting = meeting else { preview = ""; previewPath = ""; return }
         call(["action": "preview", "folder": meeting.id, "kind": previewKind]) { value in
             self.preview = value["text"] as? String ?? ""
             self.previewPath = value["path"] as? String ?? ""
+            self.previewToken = value["token"] as? String ?? ""
+            self.previewEditable = value["editable"] as? Bool ?? false
+            self.previewEditError = value["edit_error"] as? String ?? ""
+            self.previewCues = (value["cues"] as? [[String: Any]] ?? []).map(SubtitleCue.init)
+        }
+    }
+    func beginEdit() {
+        guard !busy, let meeting = meeting, previewEditable, !previewToken.isEmpty else { return }
+        editor = EditDraft(folder: meeting.id, title: meeting.title, kind: previewKind,
+                           token: previewToken, text: preview, cues: previewCues)
+    }
+    func saveEdit(_ draft: EditDraft, text: String, cues: [SubtitleCue], failed: @escaping (String) -> Void) {
+        var request: [String: Any] = ["action": "save_edit", "folder": draft.folder, "kind": draft.kind, "token": draft.token]
+        if draft.kind == "srt" {
+            request["cues"] = cues.map { ["id": $0.id, "text": $0.text] as [String: Any] }
+        } else { request["text"] = text }
+        call(request, failed: failed) { result in
+            self.hasUnsavedEdits = false
+            self.editor = nil
+            self.previewKind = result["kind"] as? String ?? draft.kind
+            let warning = result["warning"] as? String ?? ""
+            self.notice = warning.isEmpty ? "訂正已儲存。原稿與先前版本保留在會議資料夾內。" : warning
+            self.refresh()
         }
     }
     func chooseAudio() {
@@ -186,7 +253,7 @@ final class Desk: ObservableObject {
             if let path = value["path"] as? String {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
             }
-            self.notice = "交接內容已複製，也已開啟交接檔。可貼上或把檔案拖給 LLM；長會議請一併提供同資料夾的 SRT。"
+            self.notice = "最新訂正內容與時間軸已放入交接包，並複製到剪貼簿。可貼上或把檔案拖給 LLM。"
         }
     }
     func importCleaned() {
@@ -280,12 +347,19 @@ struct ContentView: View {
             return true
         }
         .onAppear { desk.load() }
-        .onChange(of: desk.selected) { desk.profile = desk.meeting?.profile ?? ""; desk.readPreview() }
+        .onChange(of: desk.selected) {
+            desk.profile = desk.meeting?.profile ?? ""
+            if desk.meeting?.corrected == true { desk.previewKind = "corrected" }
+            else if desk.previewKind == "corrected" { desk.previewKind = "prepared" }
+            desk.readPreview()
+        }
         .onChange(of: desk.previewKind) { desk.readPreview() }
         .sheet(isPresented: Binding(get: { desk.importDraft != nil }, set: { if !$0 { desk.importDraft = nil } })) {
             ImportView(desk: desk, draft: desk.importDraft ?? [:])
         }
         .sheet(isPresented: $desk.showSettings) { SettingsView(desk: desk) }
+        .sheet(item: $desk.editor) { draft in TranscriptEditor(desk: desk, draft: draft) }
+        .sheet(item: $desk.renameDraft) { draft in RenameMeetingView(desk: desk, draft: draft) }
         .alert("操作未完成", isPresented: Binding(get: { desk.error != nil }, set: { if !$0 { desk.error = nil } })) {
             Button("知道了", role: .cancel) { desk.error = nil }
         } message: { Text(desk.error ?? "") }
@@ -356,7 +430,12 @@ struct ContentView: View {
         VStack(alignment: .leading, spacing: 18) {
             HStack(alignment: .top) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text(meeting.title).font(.system(size: 25, weight: .semibold)).textSelection(.enabled)
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(meeting.title).font(.system(size: 25, weight: .semibold)).textSelection(.enabled)
+                        Button { desk.renameDraft = RenameDraft(folder: meeting.id, title: meeting.title) } label: {
+                            Image(systemName: "pencil")
+                        }.buttonStyle(.plain).help("修改會議名稱").disabled(desk.busy)
+                    }
                     Text(meeting.date + "  ·  " + meeting.status).font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -398,13 +477,22 @@ struct ContentView: View {
                 Picker("預覽", selection: $desk.previewKind) {
                     Text("原始稿").tag("raw")
                     Text("預清洗稿").tag("prepared")
+                    if meeting.corrected { Text("人工訂正").tag("corrected") }
                     Text("清洗稿").tag("cleaned")
                     Text("時間軸").tag("srt")
-                }.pickerStyle(.segmented).frame(maxWidth: 430).disabled(desk.busy)
+                }.pickerStyle(.segmented).frame(maxWidth: 440).disabled(desk.busy)
                 Spacer()
+                Button(action: desk.beginEdit) { Label("編輯文字", systemImage: "square.and.pencil") }
+                    .disabled(desk.busy || !desk.previewEditable)
                 Button {
-                    if !desk.previewPath.isEmpty { NSWorkspace.shared.open(URL(fileURLWithPath: desk.previewPath)) }
-                } label: { Image(systemName: "arrow.up.right.square") }.disabled(desk.previewPath.isEmpty)
+                    if !desk.previewPath.isEmpty { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: desk.previewPath)]) }
+                } label: { Image(systemName: "folder") }.disabled(desk.previewPath.isEmpty).help("在 Finder 顯示檔案")
+            }
+            if !desk.previewEditError.isEmpty {
+                Text(desk.previewEditError).font(.caption).foregroundStyle(.orange)
+            }
+            if desk.previewKind == "srt" {
+                Label("時間碼已鎖定，僅可訂正字幕文字", systemImage: "lock.fill").font(.caption).foregroundStyle(.secondary)
             }
             ScrollView {
                 Text(desk.preview).font(.system(size: 14)).lineSpacing(7).textSelection(.enabled)
@@ -422,6 +510,132 @@ struct ContentView: View {
             Text(label).font(.system(size: 11, weight: .medium))
             Spacer(minLength: 4)
         }.foregroundStyle(complete ? accent : .secondary)
+    }
+}
+
+struct TranscriptEditor: View {
+    @ObservedObject var desk: Desk
+    let draft: EditDraft
+    @State private var text: String
+    @State private var cues: [SubtitleCue]
+    @State private var error = ""
+    @State private var confirmDiscard = false
+    init(desk: Desk, draft: EditDraft) {
+        self.desk = desk
+        self.draft = draft
+        _text = State(initialValue: draft.text)
+        _cues = State(initialValue: draft.cues)
+    }
+    var dirty: Bool { text != draft.text || cues.map(\.text) != draft.cues.map(\.text) }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            HStack {
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(draft.kind == "srt" ? "訂正字幕文字" : "人工訂正逐字稿").font(.title2.bold())
+                    Text(draft.title).font(.callout).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if dirty { Text("尚未儲存").font(.caption).foregroundStyle(.orange) }
+            }
+            if draft.kind == "srt" {
+                Label("時間、序號與段落順序已鎖定", systemImage: "lock.fill").font(.callout)
+                Text("字幕訂正獨立保存，會放入 LLM 交接包；不會自動改寫 TXT 逐字稿。")
+                    .font(.caption).foregroundStyle(.secondary)
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 14) {
+                        ForEach($cues) { $cue in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Text("#\(cue.number)")
+                                    Text(cue.time).monospacedDigit()
+                                    Spacer()
+                                    Image(systemName: "lock.fill")
+                                }.font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                                TextField("字幕文字", text: $cue.text, axis: .vertical)
+                                    .lineLimit(2...8).textFieldStyle(.roundedBorder).disabled(desk.busy)
+                            }.padding(12).background(Color(nsColor: .controlBackgroundColor)).cornerRadius(8)
+                        }
+                    }
+                }
+            } else {
+                Text(draft.kind == "cleaned" ? "儲存後保留舊版清洗稿，並重新檢查內容。" : "儲存為「人工訂正」版本，後續清洗交接會使用這份內容。原始稿與預清洗稿仍可對照。")
+                    .font(.callout).foregroundStyle(.secondary)
+                TextEditor(text: $text).font(.system(size: 15)).lineSpacing(6)
+                    .padding(8).background(Color(nsColor: .textBackgroundColor)).cornerRadius(8).disabled(desk.busy)
+            }
+            if !error.isEmpty {
+                Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled)
+                Button("複製目前修改") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(draft.kind == "srt" ? cues.map { "\($0.number)\n\($0.time)\n\($0.text)" }.joined(separator: "\n\n") : text, forType: .string)
+                }.disabled(desk.busy)
+            }
+            HStack {
+                Text(draft.kind == "srt" ? "\(cues.count) 段字幕" : "\(text.count) 字").font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("取消") {
+                    if dirty { confirmDiscard = true } else { desk.editor = nil }
+                }.keyboardShortcut(.cancelAction).disabled(desk.busy)
+                Button(desk.busy ? "儲存中…" : "儲存訂正") {
+                    error = ""
+                    desk.saveEdit(draft, text: text, cues: cues) { error = $0 }
+                }.buttonStyle(.borderedProminent).keyboardShortcut("s", modifiers: .command)
+                    .disabled(desk.busy || !dirty)
+            }
+        }.padding(24).frame(width: 800, height: 620)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .interactiveDismissDisabled(true)
+        .onChange(of: dirty) { desk.hasUnsavedEdits = dirty }
+        .onDisappear { desk.hasUnsavedEdits = false }
+        .alert("放棄尚未儲存的修改？", isPresented: $confirmDiscard) {
+            Button("繼續編輯", role: .cancel) {}
+            Button("放棄修改", role: .destructive) { desk.hasUnsavedEdits = false; desk.editor = nil }
+        } message: { Text("這次編輯的內容尚未儲存，已儲存的版本不受影響。") }
+    }
+}
+
+struct RenameMeetingView: View {
+    @ObservedObject var desk: Desk
+    let draft: RenameDraft
+    @State private var title: String
+    @State private var error = ""
+    @State private var confirmDiscard = false
+    init(desk: Desk, draft: RenameDraft) {
+        self.desk = desk
+        self.draft = draft
+        _title = State(initialValue: draft.title)
+    }
+    var body: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            Text("修改會議名稱").font(.title2.bold())
+            TextField("會議名稱", text: $title).textFieldStyle(.roundedBorder).disabled(desk.busy)
+            Text("更新清單與後續交接顯示的名稱，音檔及資料夾位置保持不變。")
+                .font(.callout).foregroundStyle(.secondary)
+            if !error.isEmpty { Text(error).foregroundStyle(.red).textSelection(.enabled) }
+            HStack {
+                Button("取消") {
+                    if title != draft.title { confirmDiscard = true } else { desk.renameDraft = nil }
+                }.keyboardShortcut(.cancelAction).disabled(desk.busy)
+                Spacer()
+                Button("儲存名稱") {
+                    desk.call(["action": "rename", "folder": draft.folder, "title": title, "expected_title": draft.title], failed: { error = $0 }) { _ in
+                        desk.hasUnsavedEdits = false
+                        desk.renameDraft = nil
+                        desk.notice = "會議名稱已更新。"
+                        desk.refresh()
+                    }
+                }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
+                    .disabled(desk.busy || title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || title == draft.title)
+            }
+        }.padding(28).frame(width: 480)
+        .background(Color(nsColor: .windowBackgroundColor))
+        .interactiveDismissDisabled(true)
+        .onChange(of: title) { desk.hasUnsavedEdits = title != draft.title }
+        .onDisappear { desk.hasUnsavedEdits = false }
+        .alert("放棄名稱修改？", isPresented: $confirmDiscard) {
+            Button("繼續編輯", role: .cancel) {}
+            Button("放棄修改", role: .destructive) { desk.hasUnsavedEdits = false; desk.renameDraft = nil }
+        }
     }
 }
 
@@ -499,6 +713,13 @@ struct SettingsView: View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static var desk: Desk?
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if let desk = Self.desk, desk.hasUnsavedEdits {
+            let alert = NSAlert()
+            alert.messageText = "有尚未儲存的修改"
+            alert.informativeText = "請回到編輯視窗儲存，或按取消放棄修改，再結束 App。"
+            alert.runModal()
+            return .terminateCancel
+        }
         if let desk = Self.desk, desk.busy {
             let alert = NSAlert()
             alert.messageText = "目前仍有操作進行中"
@@ -515,6 +736,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+#if !DESKTOP_UI_TEST
 @main
 struct MeetingDeskApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
@@ -549,3 +771,4 @@ struct MeetingDeskApp: App {
         }
     }
 }
+#endif
