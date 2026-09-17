@@ -527,6 +527,14 @@ class DesktopService:
             paths = self.effective(folder)
             state = read_json(folder / STATE_NAME)
             quality = state.get("quality", {})
+            if not quality and paths["cleaned"].is_file():
+                # Older workspaces persisted a cleaned transcript without the
+                # newer import-time quality snapshot. Establish that snapshot
+                # from the current immutable files so the existing transcript
+                # can still be reviewed in the new Desk UI.
+                quality = self.quality_result(paths, state)
+                quality["origin"] = "legacy_existing"
+                state["quality"] = quality
             if (quality.get("status") != "pending_review" or not paths["cleaned"].is_file()
                     or not self.quality_matches(quality, paths)):
                 raise ValueError("清洗稿沒有有效的匯入檢查，或檔案已變更。請重新確認來源。")

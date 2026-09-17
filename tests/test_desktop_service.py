@@ -182,6 +182,20 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(digest(paths["cleaned"]), before)
         self.assertTrue(self.service.row(folder)["reviewed"])
 
+    def test_existing_cleaned_transcript_without_quality_snapshot_can_be_reviewed(self):
+        folder = self.prepared()
+        paths = self.service.paths(folder)
+        paths["cleaned"].write_text(paths["prepared"].read_text(encoding="utf-8"), encoding="utf-8")
+        state = read_json(folder / "desktop_state.json")
+        state.pop("quality", None)
+        (folder / "desktop_state.json").write_text(json.dumps(state), encoding="utf-8")
+
+        result = self.service.review(str(folder))
+
+        self.assertTrue(result["meeting"]["reviewed"])
+        saved = read_json(folder / "desktop_state.json")
+        self.assertEqual(saved["quality"]["origin"], "legacy_existing")
+
     def test_invalid_profile_and_outside_folder_blocked(self):
         folder = self.prepared()
         with self.assertRaises(ValueError): self.service.handoff(str(folder), "missing")
