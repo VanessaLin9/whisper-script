@@ -5,7 +5,15 @@ import unittest
 from pathlib import Path
 
 from src.desktop.editing import file_hash
-from src.desktop.jobs import create_job, read_completed_result, read_job, result_payload
+from src.desktop.jobs import (
+    create_job,
+    new_job_id,
+    read_completed_result,
+    read_job,
+    read_job_manifest,
+    result_payload,
+    segment_srt,
+)
 
 
 class DesktopJobTests(unittest.TestCase):
@@ -69,6 +77,45 @@ class DesktopJobTests(unittest.TestCase):
         Path(record["result_path"]).write_text(json.dumps(result_payload(job, output)), encoding="utf-8")
         self.input.write_text("來源已變更", encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "來源檔案已變更"):
+            read_completed_result(record)
+
+    def test_srt_segmentation_has_unique_cores_and_context_only_overlap(self):
+        self.srt.write_text(
+            "1\n00:00:10,000 --> 00:00:20,000\n第一段\n\n"
+            "2\n00:09:40,000 --> 00:09:50,000\n第一核心尾端\n\n"
+            "3\n00:10:05,000 --> 00:10:15,000\n第二核心開頭\n\n"
+            "4\n00:19:50,000 --> 00:20:00,000\n第二核心尾端\n\n"
+            "5\n00:20:10,000 --> 00:20:20,000\n第三核心\n",
+            encoding="utf-8",
+        )
+        job_id = new_job_id("clean")
+        path = segment_srt(self.root, job_id, self.srt)
+        manifest = read_job_manifest(path)
+        self.assertEqual(len(manifest["segments"]), 3)
+        core_ids = [cue for segment in manifest["segments"] for cue in segment["core_cue_ids"]]
+        self.assertEqual(core_ids, [0, 1, 2, 3, 4])
+        self.assertEqual(len(core_ids), len(set(core_ids)))
+        first = Path(manifest["segments"][0]["path"]).read_text(encoding="utf-8")
+        second = Path(manifest["segments"][1]["path"]).read_text(encoding="utf-8")
+        self.assertIn("第二核心開頭", first.split("[CONTEXT_AFTER]", 1)[1])
+        self.assertIn("第二核心開頭", second.split("[CORE]", 1)[1].split("[CONTEXT_AFTER]", 1)[0])
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
+    def test_segment_tampering_invalidates_completed_result(self):
+        job_id = new_job_id("clean")
+        manifest = segment_srt(self.root, job_id, self.srt)
+        record = create_job(
+            self.root, self.meeting, "AI 會議", "clean", "inno", "Inno Team",
+            self.profile, self.input, "ai_transcription_cleaned.txt", srt_path=self.srt,
+            segments_manifest=manifest, job_id=job_id,
+        )
+        job = read_job(Path(record["request_path"]))
+        output = Path(record["expected_output"])
+        output.write_text("清洗後逐字稿", encoding="utf-8")
+        Path(record["result_path"]).write_text(json.dumps(result_payload(job, output)), encoding="utf-8")
+        segment = Path(read_job_manifest(manifest)["segments"][0]["path"])
+        segment.write_text("tampered", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "切段檔案已變更"):
             read_completed_result(record)
 
 

@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from uuid import uuid4
 
-from src.desktop.editing import file_hash
+from src.desktop.editing import file_hash, parse_srt
 from src.output_manager.workspace import exclusive_write_text
 
 
@@ -20,6 +21,9 @@ STAGE_SKILLS = {
     "clean": "clean-meeting-transcripts",
     "notes": "standup-worklog",
 }
+JOB_ID = re.compile(r"^(clean|notes)-\d{8}T\d{6}-[0-9a-f]{10}$")
+DEFAULT_CORE_SECONDS = 10 * 60
+DEFAULT_CONTEXT_SECONDS = 45
 
 
 def _private_directory(path: Path) -> Path:
@@ -45,6 +49,102 @@ def queue_root(output_root: Path) -> Path:
     return output_root.expanduser().resolve() / ".llm_jobs"
 
 
+def new_job_id(stage: str) -> str:
+    if stage not in STAGE_SKILLS:
+        raise ValueError("不支援的 LLM job 階段。")
+    return f"{stage}-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid4().hex[:10]}"
+
+
+def _milliseconds(value: str) -> int:
+    hours, minutes, tail = value.split(":")
+    seconds, milliseconds = tail.split(",")
+    return ((int(hours) * 60 + int(minutes)) * 60 + int(seconds)) * 1000 + int(milliseconds)
+
+
+def _cue_range(cue: dict) -> tuple[int, int]:
+    start, end = cue["time"].split(" --> ")
+    return _milliseconds(start), _milliseconds(end)
+
+
+def _render_cues(cues: list[dict]) -> str:
+    if not cues:
+        return "（無）"
+    return "\n\n".join(f"{cue['number']}\n{cue['time']}\n{cue['text']}" for cue in cues)
+
+
+def segment_srt(
+    output_root: Path,
+    job_id: str,
+    srt_path: Path,
+    *,
+    core_seconds: int = DEFAULT_CORE_SECONDS,
+    context_seconds: int = DEFAULT_CONTEXT_SECONDS,
+) -> Path:
+    """Create deterministic core/context slices while assigning each cue to one core."""
+    if not JOB_ID.fullmatch(job_id) or not job_id.startswith("clean-"):
+        raise ValueError("切段必須使用有效的 clean job ID。")
+    if core_seconds <= 0 or context_seconds < 0:
+        raise ValueError("切段時間設定不合法。")
+    source = srt_path.expanduser().resolve()
+    if not source.is_file():
+        raise ValueError("找不到 SRT，無法為長會議建立固定切段。")
+    cues = parse_srt(source.read_text(encoding="utf-8-sig"))
+    timed = [(cue, *_cue_range(cue)) for cue in cues]
+    duration = max(end for _, _, end in timed)
+    core_ms = core_seconds * 1000
+    context_ms = context_seconds * 1000
+    directory = _private_directory(queue_root(output_root) / "work" / job_id / "segments")
+    entries = []
+
+    for core_start in range(0, duration, core_ms):
+        core_end = min(duration, core_start + core_ms)
+        core = [cue for cue, start, _ in timed if core_start <= start < core_end]
+        if not core:
+            continue
+        before_start = max(0, core_start - context_ms)
+        after_end = min(duration, core_end + context_ms)
+        before = [cue for cue, start, end in timed if start < core_start and end > before_start]
+        after = [cue for cue, start, _ in timed if core_end <= start < after_end]
+        number = len(entries) + 1
+        path = directory / f"seg-{number:02d}.txt"
+        text = (
+            f"# Segment {number:02d}\n"
+            f"core_ms: {core_start}-{core_end}\n"
+            f"context_ms: {before_start}-{after_end}\n\n"
+            "[CONTEXT_BEFORE]\n" + _render_cues(before) + "\n\n"
+            "[CORE]\n" + _render_cues(core) + "\n\n"
+            "[CONTEXT_AFTER]\n" + _render_cues(after) + "\n"
+        )
+        _private_text(path, text)
+        entries.append({
+            "id": f"seg-{number:02d}",
+            "path": str(path),
+            "sha256": file_hash(path),
+            "core_start_ms": core_start,
+            "core_end_ms": core_end,
+            "context_start_ms": before_start,
+            "context_end_ms": after_end,
+            "core_cue_ids": [cue["id"] for cue in core],
+            "output_order": number,
+        })
+
+    if not entries:
+        raise ValueError("SRT 沒有可切分的字幕內容。")
+    manifest = directory.parent / "segments.json"
+    payload = {
+        "schema_version": JOB_SCHEMA_VERSION,
+        "job_id": job_id,
+        "strategy": "srt-core-context",
+        "core_seconds": core_seconds,
+        "context_seconds": context_seconds,
+        "merge_rule": "依 output_order 只合併各段 CORE；CONTEXT_BEFORE/AFTER 只供理解，不可重複輸出。",
+        "timeline": _reference(source),
+        "segments": entries,
+    }
+    _private_text(manifest, json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
+    return manifest
+
+
 def create_job(
     output_root: Path,
     meeting_dir: Path,
@@ -59,6 +159,7 @@ def create_job(
     srt_path: Path | None = None,
     spec_path: Path | None = None,
     segments_manifest: Path | None = None,
+    job_id: str | None = None,
 ) -> dict:
     """Create an immutable local request and return its state-safe metadata."""
     if stage not in STAGE_SKILLS:
@@ -70,7 +171,9 @@ def create_job(
     inbox = _private_directory(root / "inbox")
     outbox = _private_directory(root / "outbox")
     _private_directory(root / "archive")
-    job_id = f"{stage}-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid4().hex[:10]}"
+    job_id = job_id or new_job_id(stage)
+    if not JOB_ID.fullmatch(job_id) or not job_id.startswith(stage + "-"):
+        raise ValueError("Job ID 與階段不一致。")
     result_dir = _private_directory(outbox / job_id)
     output_path = result_dir / expected_name
     result_path = result_dir / "result.json"
@@ -135,6 +238,28 @@ def verify_job_references(job: dict) -> None:
         path = Path(reference.get("path", "")).expanduser().resolve()
         if not path.is_file() or file_hash(path) != reference.get("sha256"):
             raise ValueError("Job 的來源檔案已變更，請重新建立工作。")
+    segment_reference = job.get("segments_manifest")
+    if segment_reference:
+        manifest = read_job_manifest(Path(segment_reference["path"]))
+        timeline = manifest.get("timeline", {})
+        timeline_path = Path(timeline.get("path", "")).expanduser().resolve()
+        if not timeline_path.is_file() or file_hash(timeline_path) != timeline.get("sha256"):
+            raise ValueError("切段使用的時間軸已變更，請重新建立工作。")
+        for segment in manifest.get("segments", []):
+            path = Path(segment.get("path", "")).expanduser().resolve()
+            if not path.is_file() or file_hash(path) != segment.get("sha256"):
+                raise ValueError("Job 的切段檔案已變更，請重新建立工作。")
+
+
+def read_job_manifest(path: Path) -> dict:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError("切段 manifest 不存在或格式錯誤。") from exc
+    if (value.get("schema_version") != JOB_SCHEMA_VERSION
+            or value.get("strategy") != "srt-core-context" or not isinstance(value.get("segments"), list)):
+        raise ValueError("切段 manifest 版本或格式不受支援。")
+    return value
 
 
 def read_completed_result(record: dict) -> tuple[Path, dict, dict]:
