@@ -14,6 +14,7 @@ struct Meeting: Identifiable {
     let corrected: Bool
     let cleaned: Bool
     let reviewed: Bool
+    let cleanJobStatus: String
     init(_ value: [String: Any]) {
         id = value["id"] as? String ?? ""
         title = value["title"] as? String ?? ""
@@ -26,6 +27,7 @@ struct Meeting: Identifiable {
         corrected = value["corrected"] as? Bool ?? false
         cleaned = value["cleaned"] as? Bool ?? false
         reviewed = value["reviewed"] as? Bool ?? false
+        cleanJobStatus = value["clean_job_status"] as? String ?? ""
     }
 }
 
@@ -238,7 +240,7 @@ final class Desk: ObservableObject {
         progress = "準備開始"
         notice = ""
         call(["action": "process", "folder": selected]) { _ in
-            self.notice = "轉錄與預清洗完成。選擇提示詞，即可準備 LLM 交接。"
+            self.notice = "轉錄與預清洗完成。選擇提示詞，即可建立清洗工作。"
             self.previewKind = "prepared"
             self.refresh()
         }
@@ -246,25 +248,36 @@ final class Desk: ObservableObject {
     func handoff(summary: Bool = false) {
         guard let selected = selected else { return }
         call(["action": "handoff", "folder": selected, "profile": profile, "summary": summary]) { value in
-            if let text = value["text"] as? String {
+            if summary, let text = value["text"] as? String {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(text, forType: .string)
             }
             if let path = value["path"] as? String {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
             }
-            self.notice = "最新訂正內容與時間軸已放入交接包，並複製到剪貼簿。可貼上或把檔案拖給 LLM。"
+            self.notice = summary
+                ? "會議記錄交接已建立並複製到剪貼簿。"
+                : "清洗工作已放入本機 inbox。Agent 完成後按「匯入清洗結果」。"
+            self.refresh()
         }
     }
     func importCleaned() {
         guard let selected = selected else { return }
+        if meeting?.cleanJobStatus.isEmpty == false {
+            call(["action": "import_cleaned", "folder": selected]) { _ in
+                self.previewKind = "cleaned"
+                self.notice = "長度檢查通過。請對照預清洗稿，確認內容保真。"
+                self.refresh()
+            }
+            return
+        }
         let panel = NSOpenPanel()
-        panel.title = "匯入 LLM 回傳的完整清洗逐字稿"
+        panel.title = "採用既有的完整清洗逐字稿"
         panel.allowedContentTypes = [.plainText]
         if panel.runModal() == .OK, let url = panel.url {
             call(["action": "import_cleaned", "folder": selected, "path": url.path]) { _ in
                 self.previewKind = "cleaned"
-                self.notice = "長度檢查通過。請對照預清洗稿，確認內容保真。"
+                self.notice = "既有清洗稿已完成長度檢查，請確認內容保真。"
                 self.refresh()
             }
         }
@@ -458,8 +471,10 @@ struct ContentView: View {
                         Text(desk.profiles[i]["label"] as? String ?? "").tag(desk.profiles[i]["key"] as? String ?? "")
                     }
                 }.frame(maxWidth: 260)
-                Button("準備 LLM 交接") { desk.handoff() }.disabled(!meeting.prepared || desk.profile.isEmpty)
-                Button(meeting.cleaned ? "重新檢查清洗稿" : "匯入清洗稿", action: desk.importCleaned).disabled(!meeting.prepared)
+                Button(meeting.cleanJobStatus.isEmpty ? "建立清洗工作" : "重新建立清洗工作") { desk.handoff() }
+                    .disabled(!meeting.prepared || desk.profile.isEmpty)
+                Button(meeting.cleanJobStatus.isEmpty ? (meeting.cleaned ? "採用既有清洗稿" : "匯入清洗稿") : "匯入清洗結果", action: desk.importCleaned)
+                    .disabled(!meeting.prepared)
                 Spacer(minLength: 0)
             }.disabled(desk.busy)
             if meeting.cleaned {

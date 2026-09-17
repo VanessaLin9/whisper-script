@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.common.cancellation import CancellationController, OperationCancelled
+from src.desktop.jobs import read_job, result_payload
 from src.desktop.service import DesktopService, digest, meeting_lock, read_json
 from src.output_manager import SourceKind
 
@@ -46,7 +47,21 @@ class DesktopTests(unittest.TestCase):
     def prepared(self):
         folder = self.add()
         self.service.process(str(folder))
+        self.service.paths(folder)["srt"].write_text(
+            "1\n00:00:00,000 --> 00:00:05,000\ntranscript for Voice Memo.m4a\n",
+            encoding="utf-8",
+        )
         return folder
+
+    def finish_job(self, folder, text, stage="clean"):
+        state = read_json(folder / "desktop_state.json")
+        record = state["handoffs"][stage]
+        job = read_job(Path(record["request_path"]))
+        output = Path(record["expected_output"])
+        output.write_text(text, encoding="utf-8")
+        Path(record["result_path"]).write_text(
+            json.dumps(result_payload(job, output), ensure_ascii=False), encoding="utf-8")
+        return output
 
     def test_medium_default_and_settings_persist(self):
         self.assertEqual(self.service.settings["model"], "medium")
@@ -111,13 +126,13 @@ class DesktopTests(unittest.TestCase):
     def test_handoff_import_review_and_summary(self):
         folder = self.prepared()
         paths = self.service.paths(folder)
-        packet = self.service.handoff(str(folder), "test")
-        self.assertIn("繁體中文", packet["text"])
-        self.assertIn("private vocabulary", packet["text"])
-        self.assertTrue(Path(packet["path"]).is_file())
-        cleaned = self.home / "result.txt"
-        cleaned.write_text(paths["prepared"].read_text(encoding="utf-8") + "。", encoding="utf-8")
-        result = self.service.import_cleaned(str(folder), str(cleaned))
+        handoff = self.service.handoff(str(folder), "test")
+        job = read_job(Path(handoff["path"]))
+        self.assertEqual(job["skill"], "clean-meeting-transcripts")
+        self.assertNotIn("private vocabulary", Path(handoff["path"]).read_text(encoding="utf-8"))
+        self.assertTrue(Path(job["segments_manifest"]["path"]).is_file())
+        self.finish_job(folder, paths["prepared"].read_text(encoding="utf-8") + "。")
+        result = self.service.import_cleaned(str(folder))
         self.assertFalse(result["meeting"]["reviewed"])
         with self.assertRaises(ValueError): self.service.handoff(str(folder), "test", summary=True)
         result = self.service.review(str(folder))
@@ -131,10 +146,9 @@ class DesktopTests(unittest.TestCase):
     def test_short_cleaned_rejected_without_writing(self):
         folder = self.prepared()
         self.service.handoff(str(folder), "test")
-        cleaned = self.home / "summary.txt"
-        cleaned.write_text("短摘要", encoding="utf-8")
+        cleaned = self.finish_job(folder, "短摘要")
         with self.assertRaisesRegex(ValueError, "20%"):
-            self.service.import_cleaned(str(folder), str(cleaned))
+            self.service.import_cleaned(str(folder))
         self.assertFalse(self.service.paths(folder)["cleaned"].exists())
         self.assertEqual(cleaned.read_text(encoding="utf-8"), "短摘要")
 
@@ -144,7 +158,12 @@ class DesktopTests(unittest.TestCase):
         paths["cleaned"].write_text(paths["prepared"].read_text(encoding="utf-8"), encoding="utf-8")
         before = digest(paths["cleaned"])
         self.assertFalse(self.service.row(folder)["reviewed"])
-        self.service.handoff(str(folder), "test")
+        state = read_json(folder / "desktop_state.json")
+        state["handoff"] = {
+            "status": "ready", "input_hash": digest(paths["prepared"]),
+            "raw_hash": digest(paths["raw"]), "timeline_hash": digest(paths["srt"]),
+        }
+        (folder / "desktop_state.json").write_text(json.dumps(state), encoding="utf-8")
         self.service.import_cleaned(str(folder), str(paths["cleaned"]))
         self.service.review(str(folder))
         self.assertEqual(digest(paths["cleaned"]), before)
@@ -196,7 +215,8 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(self.service.meetings()["meetings"][0]["title"], "新的 AI 會議名稱")
         self.assertEqual(original_files, sorted(p.name for p in folder.iterdir()))
         self.assertEqual(original_hashes, {k: digest(p) for k, p in self.service.paths(folder).items() if p.is_file()})
-        self.assertIn("會議：新的 AI 會議名稱", self.service.handoff(str(folder), "test")["text"])
+        handoff = self.service.handoff(str(folder), "test")
+        self.assertEqual(read_job(Path(handoff["path"]))["meeting"]["title"], "新的 AI 會議名稱")
         with self.assertRaisesRegex(ValueError, "已在別處更新"):
             self.service.rename(str(folder), "過期名稱", "中文 AI 會議")
         for invalid in ["  ", "不合法\n名稱", "字" * 201]:
@@ -212,8 +232,10 @@ class DesktopTests(unittest.TestCase):
         self.assertTrue(result["meeting"]["corrected"])
         restarted = DesktopService(self.repo, self.service.settings)
         self.assertEqual(restarted.preview(str(folder), "corrected")["text"], text)
-        packet = restarted.handoff(str(folder), "test")
-        self.assertIn(text, packet["text"])
+        handoff = restarted.handoff(str(folder), "test")
+        job = read_job(Path(handoff["path"]))
+        self.assertEqual(Path(job["input"]["path"]), Path(restarted.preview(str(folder), "corrected")["path"]))
+        self.assertNotIn(text, Path(handoff["path"]).read_text(encoding="utf-8"))
         self.assertEqual(before, {k: digest(p) for k, p in paths.items() if p.is_file()})
 
     def test_each_correction_preserves_previous_version(self):
@@ -245,9 +267,9 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual([(c["number"], c["time"]) for c in opened["cues"]],
                          [(c["number"], c["time"]) for c in saved["cues"]])
         self.assertEqual([c["text"] for c in saved["cues"]], [c["text"] for c in edits])
-        packet = self.service.handoff(str(folder), "test")
-        self.assertIn("訂正 第一段 API 名稱", packet["text"])
-        self.assertIn(saved["path"], packet["files"])
+        handoff = self.service.handoff(str(folder), "test")
+        job = read_job(Path(handoff["path"]))
+        self.assertEqual(Path(job["timeline"]["path"]), Path(saved["path"]))
 
     def test_srt_rejects_times_order_counts_and_timestamp_injection(self):
         folder = self.prepared()
@@ -269,7 +291,8 @@ class DesktopTests(unittest.TestCase):
         self.assertFalse((folder / "manual_revisions").exists())
 
     def test_bad_srt_remains_readable_but_cannot_be_edited(self):
-        folder = self.prepared()  # Fake SRT intentionally contains just "1".
+        folder = self.prepared()
+        self.service.paths(folder)["srt"].write_text("1", encoding="utf-8")
         preview = self.service.preview(str(folder), "srt")
         self.assertFalse(preview["editable"])
         self.assertTrue(preview["text"])
@@ -280,12 +303,13 @@ class DesktopTests(unittest.TestCase):
         self.service.handoff(str(folder), "test")
         output = self.home / "clean.txt"
         output.write_text(self.service.preview(str(folder), "prepared")["text"])
-        self.service.import_cleaned(str(folder), str(output))
+        self.finish_job(folder, output.read_text())
+        self.service.import_cleaned(str(folder))
         self.service.review(str(folder))
         self.edit(folder, "prepared", "訂正後內容，有新專有名詞 Athena。")
         self.assertFalse(self.service.row(folder)["reviewed"])
         with self.assertRaises(ValueError): self.service.review(str(folder))
-        with self.assertRaises(ValueError): self.service.import_cleaned(str(folder), str(output))
+        with self.assertRaises(ValueError): self.service.import_cleaned(str(folder))
         with self.assertRaises(ValueError): self.service.handoff(str(folder), "test", summary=True)
 
     def test_cleaned_manual_edit_requires_new_review_and_summary_uses_it(self):
@@ -293,7 +317,8 @@ class DesktopTests(unittest.TestCase):
         self.service.handoff(str(folder), "test")
         output = self.home / "clean.txt"
         output.write_text(self.service.preview(str(folder), "prepared")["text"])
-        self.service.import_cleaned(str(folder), str(output))
+        self.finish_job(folder, output.read_text())
+        self.service.import_cleaned(str(folder))
         self.service.review(str(folder))
         original_path = self.service.paths(folder)["cleaned"]
         before = original_path.read_bytes()
@@ -309,12 +334,14 @@ class DesktopTests(unittest.TestCase):
         first = self.home / "clean.txt"
         first.write_text(self.service.preview(str(folder), "prepared")["text"])
         self.service.handoff(str(folder), "test")
-        self.service.import_cleaned(str(folder), str(first))
+        self.finish_job(folder, first.read_text())
+        self.service.import_cleaned(str(folder))
         original = self.service.paths(folder)["cleaned"].read_bytes()
         self.edit(folder, "prepared", "新的來源內容，新模型名稱與 API。")
         self.service.handoff(str(folder), "test")
         first.write_text("新的來源內容，新模型名稱與 API，修正後。")
-        self.service.import_cleaned(str(folder), str(first))
+        self.finish_job(folder, first.read_text())
+        self.service.import_cleaned(str(folder))
         self.assertEqual(self.service.paths(folder)["cleaned"].read_bytes(), original)
         self.assertEqual(self.service.preview(str(folder), "cleaned")["text"], first.read_text())
         self.service.review(str(folder))
@@ -332,12 +359,11 @@ class DesktopTests(unittest.TestCase):
         folder = self.prepared()
         self.timeline(folder)
         self.service.handoff(str(folder), "test")
+        self.finish_job(folder, self.service.preview(str(folder), "prepared")["text"])
         opened = self.service.preview(str(folder), "srt")
         edits = [{"id": c["id"], "text": "訂正 " + c["text"]} for c in opened["cues"]]
         self.service.save_edit(str(folder), "srt", opened["token"], cues=edits)
-        cleaned = self.home / "clean.txt"
-        cleaned.write_text(self.service.preview(str(folder), "prepared")["text"])
-        with self.assertRaises(ValueError): self.service.import_cleaned(str(folder), str(cleaned))
+        with self.assertRaises(ValueError): self.service.import_cleaned(str(folder))
 
     def test_noop_edit_does_not_invalidate_handoff(self):
         folder = self.prepared()
@@ -345,7 +371,7 @@ class DesktopTests(unittest.TestCase):
         text = self.service.preview(str(folder), "prepared")["text"]
         result = self.edit(folder, "prepared", text)
         self.assertFalse(result["changed"])
-        self.assertEqual(read_json(folder / "desktop_state.json")["handoff"]["status"], "ready")
+        self.assertEqual(read_json(folder / "desktop_state.json")["handoffs"]["clean"]["status"], "queued")
 
     def test_editing_revision_does_not_allow_external_file_tampering(self):
         folder = self.prepared()
