@@ -21,6 +21,8 @@
 
 Job、segments、agent 輸出、prompt profiles、人工訂正版與會議記錄草稿都是私有本機資料，已由 `.gitignore` 排除。Git 只追蹤 [LLM job 格式與操作契約](docs/llm-job-contract.md)，不追蹤任何實際 packet 或會議內容。
 
+Agent 可透過 Desktop JSON 入口的 `list_jobs` 與 `validate_job` 只讀檢查 queue；handoff 加上 `dry_run: true` 可預覽 job ID、輸出位置與切段數而不寫盤。Schema v1 request 維持不可變的 `queued`，Desk 只輪詢固定 outbox 的 `result.json`；完整 canonical 欄位與單一 consumer 規則見契約文件。
+
 設定頁可調整會議資料夾、whisper.cpp 路徑、模型與執行緒，保存至 gitignored `.local/desktop_settings.json`。預設沿用 `.env` 的資料根目錄，但 GUI 模型獨立預設為 `medium`。模型須已存在於 `whisper.cpp/models/ggml-medium.bin`。切換模型只影響之後的新轉錄；切換資料根目錄只切換清單，不移動舊資料。
 
 編譯結果位於 `.local/Meeting Desk.app`，可將它拖到 Dock 保留。這是綁定本機 repo / Python 路徑的 App，不是可攜式安裝包；搬移 repo 後重新執行 `bash scripts/build-desktop.sh`。

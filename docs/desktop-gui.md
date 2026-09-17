@@ -29,6 +29,8 @@
 - Request JSON 只放 meeting、profile、input、timeline、spec、segments manifest 的絕對路徑與 SHA-256；不複製逐字稿、profile 或 summary spec 內容。
 - clean job 使用 `clean-meeting-transcripts`，由 SRT 產生 10 分鐘核心與前後各 45 秒 context。manifest 規定只依序合併 CORE，context 不可重複輸出。
 - Agent 最後才寫 `result.json` 作為完成標記；Desk 只接受 job 指定的 outbox 路徑、job/stage 相符且 hash 正確的非空輸出。來源、profile、spec、manifest 或 segment 任一變更即 fail closed。
+- Request 的 `status = queued` 是不可變契約；agent 不得寫 `running` 或修改 `desktop_state.json`。v1 queue 是單一 consumer，Desk 只從固定 outbox 的 `result.json` 衍生 `done`。
+- `list_jobs` 與 `validate_job` 提供只讀 metadata／hash 檢查；handoff `dry_run` 可預覽 job ID、固定路徑與切段數，且不建立 queue、segment、lock 或 state。
 - clean 匯入後仍是 `pending_review`。只有人工確認的 cleaned 可以建立 `standup-worklog` notes job；notes 輸出保存於會議 workspace 的 `notes_drafts/`，只供本機預覽，不代表 Notion 已發布。
 - `desktop_state.json.handoffs.clean` 與 `.notes` 分別追蹤 job；舊 `handoff` 保留作 clean 相容 pointer，legacy 清洗稿仍可由檔案選擇器採納。
 - 完整 JSON schema、agent 寫回順序與假範例見 [llm-job-contract.md](llm-job-contract.md)。
