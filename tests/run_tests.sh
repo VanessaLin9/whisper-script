@@ -22,5 +22,6 @@ PYTHONPATH="$ROOT" python3 tests/test_subprocess_runner.py -v
 PYTHONPATH="$ROOT" python3 tests/test_transcript_preparer.py -v
 PYTHONPATH="$ROOT" python3 tests/test_backend_cancellation_07_2.py -v
 PYTHONPATH="$ROOT" python3 tests/test_desktop_service.py -v
+PYTHONPATH="$ROOT" python3 tests/test_desktop_jobs.py -v
 bash tests/test_shell_workflows.sh
 bash tests/test_transcribe_english_wrapper.sh
