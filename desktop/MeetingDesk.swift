@@ -573,7 +573,7 @@ struct TranscriptEditor: View {
             }
             if draft.kind == "srt" {
                 Label("時間、序號與段落順序已鎖定", systemImage: "lock.fill").font(.callout)
-                Text("字幕訂正獨立保存，會放入 LLM 交接包；不會自動改寫 TXT 逐字稿。")
+                Text("字幕訂正獨立保存，clean job 會引用最新版本；不會自動改寫 TXT 逐字稿。")
                     .font(.caption).foregroundStyle(.secondary)
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 14) {
