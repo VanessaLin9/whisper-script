@@ -21,7 +21,16 @@ from zoneinfo import ZoneInfo
 from env_loader import load_env
 from src.common.cancellation import OperationCancelled
 from src.desktop.editing import edit_token, effective_paths, file_hash, parse_srt, revise_srt, store_revision
-from src.desktop.jobs import create_job, new_job_id, read_completed_result, segment_srt
+from src.desktop.jobs import (
+    create_job,
+    list_jobs,
+    new_job_id,
+    plan_srt_segments,
+    queue_root,
+    read_completed_result,
+    segment_srt,
+    validate_job,
+)
 from src.output_manager import SourceDescriptor, SourceKind, create_workspace, plan_workspace
 from src.output_manager.workspace import exclusive_write_text
 from src.postprocessing.preparer import prepare_file
@@ -374,7 +383,62 @@ class DesktopService:
                 atomic_json(folder / STATE_NAME, state)
         return {"meeting": self.row(folder)}
 
-    def handoff(self, value: str, profile: str, summary: bool = False) -> dict:
+    def handoff_preview(self, value: str, profile: str, summary: bool = False) -> dict:
+        """Plan a handoff without creating locks, queue paths, segments, or state."""
+        folder = self.folder(value)
+        base_paths = self.paths(folder)
+        if not base_paths["prepared"].is_file():
+            raise ValueError("尚未有預清洗稿，無法預覽 handoff。")
+        manifest = read_json(base_paths["prepared"].with_suffix(".txt.manifest.json"))
+        if (manifest.get("source_sha256") != file_hash(base_paths["raw"])
+                or manifest.get("output_sha256") != file_hash(base_paths["prepared"])):
+            raise ValueError("預清洗稿與來源／manifest 不一致。請先檢查既有檔案。")
+        state = read_json(folder / STATE_NAME)
+        paths = self.effective(folder, state)
+        profiles = load_prompt_profiles()
+        if profile not in profiles or profile == "new":
+            raise ValueError("請先選擇提示詞。")
+        selected = profiles[profile]
+        profile_path = Path(selected.get("local_path", ""))
+        if not profile_path.is_file():
+            raise ValueError("此提示詞尚未同步到本機，請先同步提示詞筆記。")
+        stage = "notes" if summary else "clean"
+        if summary and (state.get("quality", {}).get("status") != "passed"
+                        or not self.quality_matches(state["quality"], paths)):
+            raise ValueError("請先匯入清洗稿並完成內容檢查。")
+        if not summary and not paths["srt"].is_file():
+            raise ValueError("找不到 SRT，無法建立固定切段的清洗工作。")
+        specification = self.repo / "docs" / "meeting-summary-spec.md"
+        if summary and not specification.is_file():
+            raise ValueError("找不到會議記錄 coverage 規格。")
+
+        job_id = new_job_id(stage)
+        stem = base_paths["raw"].name.removesuffix("_transcription.txt")
+        expected_name = f"{stem}_meeting_notes.md" if summary else f"{stem}_transcription_cleaned.txt"
+        result_dir = queue_root(self.root) / "outbox" / job_id
+        request_path = queue_root(self.root) / "inbox" / f"{job_id}.json"
+        plan = plan_srt_segments(paths["srt"]) if not summary else None
+        job = {
+            "job_id": job_id, "stage": stage, "status": "planned",
+            "request_path": str(request_path), "input_path": str(paths["cleaned"] if summary else paths["input"]),
+            "input_hash": file_hash(paths["cleaned"] if summary else paths["input"]),
+            "profile": profile, "profile_hash": file_hash(profile_path),
+            "expected_output": str(result_dir / expected_name),
+            "result_path": str(result_dir / "result.json"),
+            "segment_count": plan["segment_count"] if plan else 0,
+        }
+        if summary:
+            job["specification_path"] = str(specification)
+            job["specification_hash"] = file_hash(specification)
+        else:
+            job["timeline_path"] = str(paths["srt"])
+            job["timeline_hash"] = plan["timeline_sha256"]
+        return {"dry_run": True, "job": job, "segment_plan": plan,
+                "note": "此 job_id 僅供預覽；正式建立時會產生新的 job_id。"}
+
+    def handoff(self, value: str, profile: str, summary: bool = False, dry_run: bool = False) -> dict:
+        if dry_run:
+            return self.handoff_preview(value, profile, summary)
         folder = self.folder(value)
         with meeting_lock(folder):
             self.prepare(folder)
@@ -419,13 +483,19 @@ class DesktopService:
                 Path(note_path), paths["cleaned"], f"{stem}_meeting_notes.md",
                 srt_path=paths["srt"] if paths["srt"].is_file() else None, spec_path=specification,
             )
-            record.update(cleaned_hash=file_hash(paths["cleaned"]), cleaned_path=str(paths["cleaned"]),
+            record.update(cleaned_hash=file_hash(paths["cleaned"]), input_path=str(paths["cleaned"]),
                           timeline_hash=file_hash(paths["srt"]), prompt_hash=record["profile_hash"])
             state.setdefault("handoffs", {})["notes"] = record
             state.update(profile=profile, prompt_hash=record["profile_hash"])
             atomic_json(folder / STATE_NAME, state)
             return {"job": record, "path": record["request_path"],
                     "files": [record["request_path"]], "meeting": self.row(folder)}
+
+    def list_jobs(self) -> dict:
+        return {"jobs": list_jobs(self.root)}
+
+    def validate_job(self, request_path: str) -> dict:
+        return {"job": validate_job(self.root, Path(request_path))}
 
     def import_cleaned(self, value: str, source: str | None = None) -> dict:
         folder = self.folder(value)
@@ -577,7 +647,10 @@ def dispatch(service: DesktopService, request: dict, cancellation=None, progress
     if action == "inspect": return service.inspect_audio(request["path"])
     if action == "import": return service.import_audio(request["path"], request["title"], request["meeting_time"])
     if action == "process": return service.process(request["folder"], cancellation, progress)
-    if action == "handoff": return service.handoff(request["folder"], request["profile"], request.get("summary", False))
+    if action == "handoff": return service.handoff(
+        request["folder"], request["profile"], request.get("summary", False), request.get("dry_run", False))
+    if action == "list_jobs": return service.list_jobs()
+    if action == "validate_job": return service.validate_job(request["request_path"])
     if action == "import_cleaned": return service.import_cleaned(request["folder"], request.get("path"))
     if action == "import_notes": return service.import_notes(request["folder"])
     if action == "review": return service.review(request["folder"])

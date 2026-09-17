@@ -6,13 +6,18 @@ from pathlib import Path
 
 from src.desktop.editing import file_hash
 from src.desktop.jobs import (
+    REQUEST_OPTIONAL_FIELDS,
+    REQUEST_REQUIRED_FIELDS,
     create_job,
+    list_jobs,
     new_job_id,
+    plan_srt_segments,
     read_completed_result,
     read_job,
     read_job_manifest,
     result_payload,
     segment_srt,
+    validate_job,
 )
 
 
@@ -48,9 +53,53 @@ class DesktopJobTests(unittest.TestCase):
         self.assertEqual(job["input"]["path"], str(self.input.resolve()))
         self.assertEqual(job["input"]["sha256"], file_hash(self.input))
         self.assertEqual(job["profile"]["path"], str(self.profile.resolve()))
+        self.assertEqual(set(job), REQUEST_REQUIRED_FIELDS | {"timeline"})
+        self.assertTrue(set(job) <= REQUEST_REQUIRED_FIELDS | REQUEST_OPTIONAL_FIELDS)
         serialized = request.read_text(encoding="utf-8")
         self.assertNotIn("private vocabulary", serialized)
         self.assertNotIn("逐字稿內容 Athena API", serialized)
+
+    def test_segment_plan_is_read_only_and_matches_materialized_segments(self):
+        queue = self.root / ".llm_jobs"
+        plan = plan_srt_segments(self.srt)
+        self.assertEqual(plan["segment_count"], 1)
+        self.assertFalse(queue.exists())
+        manifest = read_job_manifest(segment_srt(self.root, new_job_id("clean"), self.srt))
+        self.assertEqual(plan["segment_count"], len(manifest["segments"]))
+        self.assertEqual(plan["segments"][0]["core_cue_ids"], manifest["segments"][0]["core_cue_ids"])
+
+    def test_list_and_validate_jobs_are_read_only_metadata_views(self):
+        record = self.create()
+        request = Path(record["request_path"])
+        before = {str(path): (path.stat().st_mtime_ns, path.read_bytes())
+                  for path in self.root.rglob("*") if path.is_file()}
+
+        report = validate_job(self.root, request)
+        listing = list_jobs(self.root)
+
+        self.assertTrue(report["valid"])
+        self.assertEqual(report["status"], "queued")
+        self.assertEqual(listing, [report])
+        self.assertNotIn("逐字稿內容", json.dumps(report, ensure_ascii=False))
+        after = {str(path): (path.stat().st_mtime_ns, path.read_bytes())
+                 for path in self.root.rglob("*") if path.is_file()}
+        self.assertEqual(after, before)
+
+        job = read_job(request)
+        output = Path(record["expected_output"])
+        output.write_text("清洗後逐字稿", encoding="utf-8")
+        Path(record["result_path"]).write_text(
+            json.dumps(result_payload(job, output), ensure_ascii=False), encoding="utf-8")
+        self.assertEqual(validate_job(self.root, request)["status"], "done")
+
+    def test_validate_job_reports_stale_and_rejects_outside_inbox(self):
+        record = self.create()
+        self.input.write_text("來源已改變", encoding="utf-8")
+        report = validate_job(self.root, Path(record["request_path"]))
+        self.assertFalse(report["valid"])
+        self.assertEqual(report["status"], "stale")
+        with self.assertRaisesRegex(ValueError, "inbox"):
+            validate_job(self.root, self.input)
 
     def test_completed_result_requires_exact_output_path_and_hash(self):
         record = self.create()

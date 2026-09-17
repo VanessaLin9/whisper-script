@@ -8,7 +8,7 @@ from unittest.mock import patch
 
 from src.common.cancellation import CancellationController, OperationCancelled
 from src.desktop.jobs import read_job, result_payload
-from src.desktop.service import DesktopService, digest, meeting_lock, read_json
+from src.desktop.service import DesktopService, digest, dispatch, meeting_lock, read_json
 from src.output_manager import SourceKind
 
 REPO = Path(__file__).resolve().parents[1]
@@ -140,10 +140,19 @@ class DesktopTests(unittest.TestCase):
         with self.assertRaises(ValueError): self.service.handoff(str(folder), "test", summary=True)
         result = self.service.review(str(folder))
         self.assertTrue(result["meeting"]["reviewed"])
+        state_before_preview = (folder / "desktop_state.json").read_bytes()
+        files_before_preview = {str(path) for path in self.root.rglob("*")}
+        notes_preview = self.service.handoff(str(folder), "test", summary=True, dry_run=True)
+        self.assertEqual(notes_preview["job"]["stage"], "notes")
+        self.assertEqual(notes_preview["job"]["segment_count"], 0)
+        self.assertEqual((folder / "desktop_state.json").read_bytes(), state_before_preview)
+        self.assertEqual({str(path) for path in self.root.rglob("*")}, files_before_preview)
         notes = self.service.handoff(str(folder), "test", summary=True)
         notes_job = read_job(Path(notes["path"]))
         self.assertEqual(notes_job["skill"], "standup-worklog")
         self.assertEqual(Path(notes_job["input"]["path"]), paths["cleaned"])
+        self.assertEqual(Path(notes["job"]["input_path"]), paths["cleaned"])
+        self.assertNotIn("cleaned_path", notes["job"])
         self.assertTrue(Path(notes_job["specification"]["path"]).is_file())
         notes_request = Path(notes["path"]).read_text(encoding="utf-8")
         self.assertNotIn("Coverage spec", notes_request)
@@ -155,6 +164,38 @@ class DesktopTests(unittest.TestCase):
         paths["cleaned"].write_text("externally changed", encoding="utf-8")
         self.assertFalse(self.service.row(folder)["reviewed"])
         with self.assertRaises(ValueError): self.service.handoff(str(folder), "test", summary=True)
+
+    def test_handoff_dry_run_reports_job_and_segments_without_writing(self):
+        folder = self.prepared()
+        queue = self.root / ".llm_jobs"
+        state_path = folder / "desktop_state.json"
+        before = state_path.read_bytes()
+
+        preview = dispatch(self.service, {
+            "action": "handoff", "folder": str(folder), "profile": "test", "dry_run": True,
+        })
+
+        self.assertTrue(preview["dry_run"])
+        self.assertEqual(preview["job"]["stage"], "clean")
+        self.assertRegex(preview["job"]["job_id"], r"^clean-")
+        self.assertEqual(preview["job"]["segment_count"], 1)
+        self.assertEqual(preview["segment_plan"]["segment_count"], 1)
+        self.assertFalse(queue.exists())
+        self.assertEqual(state_path.read_bytes(), before)
+
+    def test_read_only_job_actions_expose_metadata(self):
+        folder = self.prepared()
+        created = self.service.handoff(str(folder), "test")
+        request_path = created["path"]
+
+        listed = dispatch(self.service, {"action": "list_jobs"})["jobs"]
+        checked = dispatch(self.service, {
+            "action": "validate_job", "request_path": request_path,
+        })["job"]
+
+        self.assertEqual([item["job_id"] for item in listed], [created["job"]["job_id"]])
+        self.assertTrue(checked["valid"])
+        self.assertEqual(checked["status"], "queued")
 
     def test_short_cleaned_rejected_without_writing(self):
         folder = self.prepared()
