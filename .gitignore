@@ -60,6 +60,15 @@ tmp/
 # Local prompt notes may contain private domain knowledge. Never commit them.
 .local/
 
+# Private Meeting Desk handoffs, agent jobs, and human/LLM revisions.
+# Keep these ignored even if a meeting root is configured inside this checkout.
+.llm_jobs/
+**/.llm_jobs/
+**/llm_jobs/
+**/llm_handoff/
+**/manual_revisions/
+**/notes_drafts/
+
 
 # Directories potentially created on remote AFP share
 .AppleDB
