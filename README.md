@@ -11,13 +11,17 @@
 1. 從語音備忘錄拖出音檔，再拖進 App（或按「匯入音檔」選檔）。不必先放到 `Transcripts`。
 2. 確認會議名稱與錄音時間。工具保存原始音檔副本，來源不移動、不刪除；同名會議不覆寫。
 3. 按「轉錄並整理」。預設 `medium` + `zh`，輸出 TXT / SRT / JSON，再做 deterministic 預清洗。繁體校正留到 LLM 清洗，不改寫 raw ASR。
-4. 選提示詞，按「準備 LLM 交接」。完整交接內容會複製到剪貼簿，並在 Finder 顯示私有交接檔。可貼到 LLM 或直接上傳檔案；長會議請同時提供會議資料夾的 SRT。
-5. 將 LLM 回傳的完整逐字稿存成 UTF-8 TXT，按「匯入清洗稿」。縮短超過 20% 會擋下，不會覆寫既有稿件。
-6. 切換原始／預清洗／清洗稿檢查內容，再按「已檢查，確認清洗稿」。最後可準備另一份「會議記錄交接」。Notion 尚未自動發布。
+4. 選提示詞，按「建立清洗工作」。Desk 會在 `<MeetingRecords>/.llm_jobs/inbox/` 建立小型 job JSON，並依 SRT 產生每段 10 分鐘核心＋前後 45 秒上下文；JSON 只含本機路徑與 hash，不含逐字稿或 prompt 內容。
+5. Agent 依 job 指定的位置把完整 cleaned TXT 與 `result.json` 寫回 outbox。按「匯入清洗結果」後，Desk 驗證 job、來源與輸出 hash；縮短超過 20% 會擋下，不覆寫既有稿件。
+6. 對照原始／預清洗／清洗稿後按「已檢查，確認清洗稿」，再建立獨立的「會議記錄工作」。Agent 回傳 Markdown 草稿後按「匯入會議記錄草稿」即可在本機預覽；Notion 尚未自動發布。
 
 左側會列出既有會議；失敗與取消後可回同一場會議續跑。舊 cleaned 檔不會自動算完成：先建立交接、按「重新檢查清洗稿」選擇既有 cleaned TXT，再做內容確認；不會重寫檔案。
 
-**人工訂正與改名：** 點會議名稱旁的鉛筆即可改名。各逐字稿分頁的「編輯文字」可修正內容，原始／預清洗稿的修改會另存為「人工訂正」分頁，後續 LLM 使用最新訂正版。清洗稿修改後需重新確認。每次儲存保留舊版；取消或退出時會提醒未儲存的修改。時間軸以逐段字幕編輯，**序號與時間碼固定，只有文字可修改**；字幕與 TXT 分開保存，不自動互相改寫。新交接包包含訂正 TXT 與時間軸參考。
+**人工訂正與改名：** 點會議名稱旁的鉛筆即可改名。各逐字稿分頁的「編輯文字」可修正內容，原始／預清洗稿的修改會另存為「人工訂正」分頁，後續 LLM 使用最新訂正版。清洗稿修改後需重新確認。每次儲存保留舊版；取消或退出時會提醒未儲存的修改。時間軸以逐段字幕編輯，**序號與時間碼固定，只有文字可修改**；字幕與 TXT 分開保存，不自動互相改寫。新的 clean job 會引用目前訂正 TXT、訂正 SRT 和各自 hash。
+
+Job、segments、agent 輸出、prompt profiles、人工訂正版與會議記錄草稿都是私有本機資料，已由 `.gitignore` 排除。Git 只追蹤 [LLM job 格式與操作契約](docs/llm-job-contract.md)，不追蹤任何實際 packet 或會議內容。
+
+Agent 可透過 Desktop JSON 入口的 `list_jobs` 與 `validate_job` 只讀檢查 queue；handoff 加上 `dry_run: true` 可預覽 job ID、輸出位置與切段數而不寫盤。Schema v1 request 維持不可變的 `queued`，Desk 只輪詢固定 outbox 的 `result.json`；完整 canonical 欄位與單一 consumer 規則見契約文件。
 
 設定頁可調整會議資料夾、whisper.cpp 路徑、模型與執行緒，保存至 gitignored `.local/desktop_settings.json`。預設沿用 `.env` 的資料根目錄，但 GUI 模型獨立預設為 `medium`。模型須已存在於 `whisper.cpp/models/ggml-medium.bin`。切換模型只影響之後的新轉錄；切換資料根目錄只切換清單，不移動舊資料。
 
