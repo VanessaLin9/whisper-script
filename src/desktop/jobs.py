@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -199,12 +200,55 @@ def build_notes_job(
     return document
 
 
+def ensure_job_shape(job: object) -> dict:
+    """Reject JSON that is not the job object the importer walks."""
+    if not isinstance(job, dict):
+        raise JobRejected("工作格式無法辨識。")
+    for key in ("profile", "inputs", "expected_output"):
+        if key in job and not isinstance(job[key], dict):
+            raise JobRejected("工作格式無法辨識。")
+    inputs = job.get("inputs")
+    if isinstance(inputs, dict):
+        for key in ("transcript", "srt", "cleaned", "specification", "vocab"):
+            if key in inputs and inputs[key] is not None and not isinstance(inputs[key], dict):
+                raise JobRejected("工作格式無法辨識。")
+    if "meeting_dir" in job and not isinstance(job["meeting_dir"], str):
+        raise JobRejected("工作格式無法辨識。")
+    if "job_id" in job and not isinstance(job["job_id"], str):
+        raise JobRejected("工作格式無法辨識。")
+    segments = job.get("segments")
+    if segments is not None and not isinstance(segments, dict):
+        raise JobRejected("工作格式無法辨識。")
+    if isinstance(segments, dict):
+        items = segments.get("items", [])
+        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+            raise JobRejected("工作格式無法辨識。")
+    return job
+
+
+def ensure_result_shape(result: object) -> dict:
+    """Reject JSON that is not the result object the importer walks."""
+    if not isinstance(result, dict):
+        raise JobRejected("結果格式無法辨識。")
+    for key in ("output", "coverage", "draft"):
+        if key in result and result[key] is not None and not isinstance(result[key], dict):
+            raise JobRejected("結果格式無法辨識。")
+    segments = result.get("segments")
+    if segments is not None and (
+        not isinstance(segments, list) or any(not isinstance(item, dict) for item in segments)
+    ):
+        raise JobRejected("結果格式無法辨識。")
+    return result
+
+
 def segment_mismatch(job: dict) -> bool:
     segments = job.get("segments")
     if not isinstance(segments, dict):
         return False
     for item in segments.get("items") or []:
-        path = Path(item.get("path", ""))
+        if not isinstance(item, dict) or not isinstance(item.get("path"), str):
+            return True
+        path = Path(item["path"])
         if not path.is_file() or file_sha256(path) != item.get("sha256"):
             return True
     manifest = Path(segments.get("manifest_path", ""))
@@ -226,7 +270,7 @@ def merged_segment_text(job: dict, result: dict) -> str:
     parts = []
     for item in expected:
         got = by_id.get(item["id"])
-        if not got or got.get("output_order") != item["output_order"]:
+        if not got or got.get("output_order") != item["output_order"] or not isinstance(item.get("outbox_path"), str):
             raise JobRejected("結果的分段順序與工作不符。")
         path = _validated_output_path(got.get("path"), got.get("sha256"), Path(item["outbox_path"]))
         text = path.read_text(encoding="utf-8-sig").strip()
@@ -241,7 +285,7 @@ def merged_segment_text(job: dict, result: dict) -> str:
 def validated_outbox_file(job: dict, result: dict, outbox_dir: Path) -> Path:
     _require_done_result(job, result)
     output = result.get("output") if isinstance(result.get("output"), dict) else {}
-    expected = (outbox_dir.resolve() / f"{job['job_id']}.txt")
+    expected = outbox_dir / f"{job['job_id']}.txt"
     return _validated_output_path(output.get("path"), output.get("sha256"), expected)
 
 
@@ -282,7 +326,8 @@ def _validate_coverage(path: Path) -> None:
 
 
 def _require_done_result(job: dict, result: dict, stage: str = "clean") -> None:
-    if not isinstance(result, dict) or result.get("schema_version") != SCHEMA_VERSION:
+    result = ensure_result_shape(result)
+    if result.get("schema_version") != SCHEMA_VERSION:
         raise JobRejected("結果格式無法辨識。")
     if result.get("job_id") != job.get("job_id") or result.get("stage") != stage or job.get("stage") != stage:
         raise JobRejected("結果與清洗工作不符。" if stage == "clean" else "結果與會議記錄工作不符。")
@@ -294,14 +339,31 @@ def _require_done_result(job: dict, result: dict, stage: str = "clean") -> None:
         raise JobRejected("清洗結果尚未完成。")
 
 
+def _jobs_identity(raw: Path) -> tuple[Path, tuple[str, ...]]:
+    """Split a path at ``.llm_jobs``. Only the prefix above that directory is resolved."""
+    lexical = Path(os.path.abspath(raw.expanduser()))
+    parts = lexical.parts
+    try:
+        index = parts.index(".llm_jobs")
+    except ValueError as exc:
+        raise JobRejected("清洗結果必須放在這個工作約定的 outbox 檔案。") from exc
+    return Path(*parts[:index]).resolve(), parts[index:]
+
+
 def _validated_output_path(raw_path: object, digest: object, expected: Path) -> Path:
     if not isinstance(raw_path, str) or not isinstance(digest, str) or len(digest) != 64:
         raise JobRejected("結果缺少輸出路徑或 hash。")
-    path = Path(raw_path).expanduser().resolve()
-    target = expected.resolve()
+    reported_prefix, reported_suffix = _jobs_identity(Path(raw_path))
+    expected_prefix, expected_suffix = _jobs_identity(expected)
     # 必須等於該 job 約定的那一個 outbox 檔，不能只是落在 outbox 目錄裡（PR #13）。
-    if path.parent != target.parent or path != target:
+    # 符號連結（含 .llm_jobs 以下的目錄）也拒絕，避免 resolve 之後比對通過（PR #13）。
+    if reported_prefix != expected_prefix or reported_suffix != expected_suffix:
         raise JobRejected("清洗結果必須放在這個工作約定的 outbox 檔案。")
+    path = expected_prefix
+    for part in expected_suffix:
+        path = path / part
+        if path.is_symlink():
+            raise JobRejected("輸出路徑不可為符號連結。")
     if not path.is_file():
         raise JobRejected("找不到 outbox 的清洗稿。")
     if file_sha256(path) != digest:

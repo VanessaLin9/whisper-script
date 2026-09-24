@@ -25,6 +25,7 @@ from src.desktop.jobs import (
     build_clean_job,
     build_notes_job,
     created_timestamp,
+    ensure_job_shape,
     file_sha256,
     merged_segment_text,
     new_clean_job_id,
@@ -402,7 +403,6 @@ class DesktopService:
                 return {"text": str(job_path), "path": str(job_path), "files": [
                     str(job_path), str(paths["cleaned"]), str(specification),
                 ], "job_id": job_id, "meeting": self.row(folder)}
-            self._retire_previous_clean_job(state)
             inbox, outbox = self._job_dirs()
             job_id = new_clean_job_id()
             try:
@@ -414,6 +414,8 @@ class DesktopService:
                 profile_key=profile, profile_path=note, paths=paths, outbox_dir=outbox,
                 created_at=created_timestamp(datetime.now(TZ)), segments=segments,
             )
+            # 先完成切段與 job 內容，再封存上一份。切段失敗時上一份仍留在 inbox（PR #13）。
+            self._retire_previous_clean_job(state)
             job_path = inbox / f"{job_id}.json"
             atomic_json(job_path, document)
             body = paths["input"]
@@ -453,9 +455,24 @@ class DesktopService:
         record["status"] = status
         path = Path(record.get("job_path", ""))
         if path.is_file():
-            job = read_json(path)
+            try:
+                job = read_json(path)
+            except json.JSONDecodeError:
+                return
+            if not isinstance(job, dict):
+                return
             job["status"] = status
             atomic_json(path, job)
+
+    def _place_exact_text(self, dest: Path, text: str) -> None:
+        if dest.is_symlink():
+            raise ValueError("會議記錄路徑不可為符號連結。")
+        data = text.encode("utf-8")
+        if dest.exists():
+            if not dest.is_file() or file_sha256(dest) != hashlib.sha256(data).hexdigest():
+                raise ValueError("會議記錄檔已存在且內容不同，已停止匯入。")
+            return
+        exclusive_write_text(dest, text)
 
     def _archive_clean_job(self, state: dict, status: str) -> None:
         self._archive_job(state, status, "clean")
@@ -467,6 +484,8 @@ class DesktopService:
         path = Path(record.get("job_path", ""))
         if path.is_file():
             job = read_json(path)
+            if not isinstance(job, dict):
+                raise ValueError("工作格式無法辨識。")
             job["status"] = status
             if path.parent.name == "archive":
                 atomic_json(path, job)
@@ -566,10 +585,11 @@ class DesktopService:
             if not job_path.is_file():
                 raise ValueError("找不到清洗工作檔。請重新建立。")
             try:
-                job = read_json(job_path)
-            except json.JSONDecodeError as exc:
+                job = ensure_job_shape(read_json(job_path))
+            except (json.JSONDecodeError, JobRejected) as exc:
                 raise ValueError("清洗工作格式無法辨識。") from exc
-            if job.get("job_id") != record["job_id"] or Path(job.get("meeting_dir", "")).resolve() != folder:
+            meeting_dir = job.get("meeting_dir")
+            if job.get("job_id") != record["job_id"] or not isinstance(meeting_dir, str) or Path(meeting_dir).resolve() != folder:
                 raise ValueError("清洗工作與這場會議不符。")
             if job.get("status") in {"failed", "imported"}:
                 raise ValueError("這個清洗工作已結束，請重新建立。")
@@ -626,16 +646,19 @@ class DesktopService:
             if not job_path.is_file():
                 raise ValueError("找不到會議記錄工作檔。請重新建立。")
             try:
-                job = read_json(job_path)
-            except json.JSONDecodeError as exc:
+                job = ensure_job_shape(read_json(job_path))
+            except (json.JSONDecodeError, JobRejected) as exc:
                 raise ValueError("會議記錄工作格式無法辨識。") from exc
-            if job.get("job_id") != record["job_id"] or Path(job.get("meeting_dir", "")).resolve() != folder:
+            meeting_dir = job.get("meeting_dir")
+            if job.get("job_id") != record["job_id"] or not isinstance(meeting_dir, str) or Path(meeting_dir).resolve() != folder:
                 raise ValueError("會議記錄工作與這場會議不符。")
             if job.get("status") in {"failed", "imported"} or record.get("status") in {"failed", "imported"}:
                 raise ValueError("這個會議記錄工作已結束，請重新建立。")
             cleaned = paths["cleaned"]
             specification = self.repo / "docs" / "meeting-summary-spec.md"
-            note = Path(job.get("profile", {}).get("path", ""))
+            profile = job.get("profile") if isinstance(job.get("profile"), dict) else {}
+            profile_path = profile.get("path") if isinstance(profile.get("path"), str) else ""
+            note = Path(profile_path)
             quality = state.get("quality", {})
             confirmed = quality.get("status") == "passed" and self.quality_matches(quality, paths)
             reasons = []
@@ -676,8 +699,9 @@ class DesktopService:
             notes_dir.mkdir(exist_ok=True)
             coverage_dest = notes_dir / f"{job['job_id']}-coverage.json"
             draft_dest = notes_dir / f"{job['job_id']}-notes.md"
-            exclusive_write_text(coverage_dest, coverage.read_text(encoding="utf-8-sig"))
-            exclusive_write_text(draft_dest, draft.read_text(encoding="utf-8-sig"))
+            # 寫到一半可以重試：既有檔只有 hash 相同才沿用，不覆寫不同內容（PR #13）。
+            self._place_exact_text(coverage_dest, coverage.read_text(encoding="utf-8-sig"))
+            self._place_exact_text(draft_dest, draft.read_text(encoding="utf-8-sig"))
             if cleaned.read_bytes() != cleaned_before:
                 raise ValueError("清洗稿被改動，已停止匯入。")
             self._archive_job(state, "imported", "notes")

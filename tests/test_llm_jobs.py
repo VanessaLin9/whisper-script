@@ -4,7 +4,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.desktop.jobs import JobRejected, build_clean_job, file_sha256, merged_segment_text, stale_reasons, validated_outbox_file
+from src.desktop.jobs import (
+    JobRejected,
+    build_clean_job,
+    build_notes_job,
+    ensure_job_shape,
+    file_sha256,
+    merged_segment_text,
+    stale_reasons,
+    validated_notes_outputs,
+    validated_outbox_file,
+)
 from src.desktop.segments import core_transcript, load_timeline, plan_segments, render_segment
 
 
@@ -77,6 +87,76 @@ class CleanJobContractTests(unittest.TestCase):
             "output": {"path": str(expected), "sha256": file_sha256(expected)},
         }, self.outbox)
         self.assertEqual(accepted, expected.resolve())
+
+    def test_outbox_symlink_is_rejected(self):
+        document = self.job()
+        outside = self.root / "outside.txt"
+        outside.write_text("清洗後的逐字稿內容，足夠做長度比較。", encoding="utf-8")
+        expected = self.outbox / "clean-test.txt"
+        expected.symlink_to(outside)
+        result = {
+            "schema_version": 1, "job_id": "clean-test", "stage": "clean", "status": "done",
+            "output": {"path": str(expected), "sha256": file_sha256(outside)},
+        }
+        with self.assertRaisesRegex(JobRejected, "符號連結"):
+            validated_outbox_file(document, result, self.outbox)
+        result["output"]["path"] = str(outside.resolve())
+        with self.assertRaisesRegex(JobRejected, "outbox"):
+            validated_outbox_file(document, result, self.outbox)
+        self.assertEqual(outside.read_text(encoding="utf-8"), "清洗後的逐字稿內容，足夠做長度比較。")
+
+    def test_segment_directory_symlink_is_rejected(self):
+        escaped = self.root / "escaped"
+        escaped.mkdir()
+        body = escaped / "seg-01.txt"
+        body.write_text("核心清洗稿\n", encoding="utf-8")
+        linked = self.outbox / "jobdir"
+        linked.symlink_to(escaped, target_is_directory=True)
+        out = linked / "seg-01.txt"
+        job = {"job_id": "clean-test", "stage": "clean", "segments": {"items": [{
+            "id": "seg-01", "output_order": 1, "outbox_path": str(out),
+        }]}}
+        result = {"schema_version": 1, "job_id": "clean-test", "stage": "clean", "status": "done", "segments": [{
+            "id": "seg-01", "output_order": 1, "path": str(out), "sha256": file_sha256(body),
+        }]}
+        with self.assertRaisesRegex(JobRejected, "符號連結"):
+            merged_segment_text(job, result)
+
+    def test_notes_coverage_symlink_is_rejected(self):
+        cleaned = self.paths["cleaned"]
+        cleaned.write_text("已確認清洗稿\n", encoding="utf-8")
+        spec = self.root / "spec.md"
+        spec.write_text("規格\n", encoding="utf-8")
+        job = build_notes_job(
+            job_id="notes-test", meeting_dir=self.meeting, meeting_title="示範會議",
+            profile_key="inno", profile_path=self.profile, cleaned_path=cleaned,
+            specification_path=spec, outbox_dir=self.outbox, created_at="2026-09-25T09:00:00+08:00",
+        )
+        outside = self.root / "coverage.json"
+        outside.write_text('{"topics":[]}\n', encoding="utf-8")
+        coverage = Path(job["expected_output"]["coverage_path"])
+        coverage.symlink_to(outside)
+        draft = Path(job["expected_output"]["draft_path"])
+        draft.write_text("草稿\n", encoding="utf-8")
+        with self.assertRaisesRegex(JobRejected, "符號連結"):
+            validated_notes_outputs(job, {
+                "schema_version": 1, "job_id": "notes-test", "stage": "notes", "status": "done",
+                "coverage": {"path": str(coverage), "sha256": file_sha256(outside)},
+                "draft": {"path": str(draft), "sha256": file_sha256(draft)},
+            })
+
+    def test_non_object_json_is_a_contract_error(self):
+        with self.assertRaisesRegex(JobRejected, "格式"):
+            ensure_job_shape(None)
+        with self.assertRaisesRegex(JobRejected, "格式"):
+            ensure_job_shape({"inputs": [], "profile": {}})
+        with self.assertRaisesRegex(JobRejected, "格式"):
+            validated_outbox_file(self.job(), [], self.outbox)
+        with self.assertRaisesRegex(JobRejected, "格式"):
+            validated_outbox_file(self.job(), {
+                "schema_version": 1, "job_id": "clean-test", "stage": "clean", "status": "done",
+                "segments": [1],
+            }, self.outbox)
 
     def test_sixty_eight_minutes_cover_every_cue_once(self):
         cues = load_timeline(self._write_srt(68 * 60 * 1000))
