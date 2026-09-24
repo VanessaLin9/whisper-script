@@ -4,7 +4,7 @@
 
 ## 使用範圍
 
-原生 App 可拖曳匯入或選取單一音檔、確認錄音時間、瀏覽既有會議、轉錄、預清洗、取消／續跑、建立清洗 job、從 outbox 匯入清洗稿、預覽與內容確認、準備會議記錄交接。預設多語言 medium、zh。ASR 不保證字體為繁體；繁體校正與專有名詞保真交由後續 LLM 清洗。清洗 job 只含路徑與 hash，放在會議資料根目錄的 `.llm_jobs/inbox`。Desk 依有效 SRT 在 cue 邊界切成約 10 分鐘核心、前後各 45 秒上下文；沒有可解析的 SRT 就停止。Agent 只回各段核心到 `.llm_jobs/outbox`，Desk 再合併。Agent 不寫 `desktop_state.json`。notes job 尚未實作。
+原生 App 可拖曳匯入或選取單一音檔、確認錄音時間、瀏覽既有會議、轉錄、預清洗、取消／續跑、建立清洗 job、從 outbox 匯入清洗稿、預覽與內容確認、準備會議記錄交接。預設多語言 medium、zh。ASR 不保證字體為繁體；繁體校正與專有名詞保真交由後續 LLM 清洗。清洗 job 只含路徑與 hash，放在會議資料根目錄的 `.llm_jobs/inbox`。Desk 依有效 SRT 在 cue 邊界切成約 10 分鐘核心、前後各 45 秒上下文；沒有可解析的 SRT 就停止。Agent 只回各段核心到 `.llm_jobs/outbox`，Desk 再合併。會議記錄是另一個 job，只能在清洗稿已確認後建立，匯入 coverage map 與草稿，不回寫清洗稿，也不發布 Notion。Agent 不寫 `desktop_state.json`。
 
 內建錄音、批次佇列、Drive GUI、LLM API、Notion 發布尚未實作。使用者可繼續使用語音備忘錄；現有 shell 入口仍保留。
 
@@ -44,7 +44,7 @@
 - `desktop_state.json`：title、status、attempts、raw/prepared hashes、profile、prompt hash、handoff、quality。
 - `.desktop.lock`：flock 鎖檔，每場會議同時只有一個 GUI mutation。鎖檔可以存在，鎖在 process 結束後自動釋放。
 - `<MeetingRecords>/.llm_jobs/inbox|outbox|archive`：清洗 job 與 agent 結果。Job JSON 不含逐字稿或提示詞內文。匯入成功後 job 移到 archive。
-- `llm_handoff/summary-<timestamp>.txt`：會議記錄交接仍是私有全文包，留在會議資料夾，不能提交 Git。notes job 尚未取代它。
+- `meeting_notes/<job_id>-coverage.json` 與 `<job_id>-notes.md`：會議記錄匯入後的 coverage map 與草稿。不回寫清洗稿，也不寫入 Notion。
 
 GUI 清單可以讀取 legacy raw workspace；單一資料夾損壞／多份 raw 時列出警告，不阻擋其他會議。首次不自動選擇最新會議。
 
@@ -58,7 +58,7 @@ GUI 清單可以讀取 legacy raw workspace；單一資料夾損壞／多份 raw
 6. 匯入讀取該 job 約定的 outbox 檔，核對 job ID、來源 hash、輸出 hash 與檔案位置。清洗稿需非空、縮短不超過 20%；以人工訂正稿（沒有才用 prepared）字元數為主要長度基準。檢查通過後仍是 `pending_review`，不是語意保真的自動證明。舊的選檔匯入仍可用於重新檢查既有清洗稿。
 7. 使用者對照檢查後才設為 `passed`，保存 reviewer/time；展示與 summary 交接重新檢查 raw/prepared/cleaned hashes。檔案外部修改會失去已確認狀態。
 8. 已存在的 cleaned 不覆寫。可選取同一個 cleaned 檔做重新驗證／採納 legacy 產物；若匯入不同檔案，會另存人工版本目錄並更新目前路徑，舊版仍保留。
-9. Notion 明確保留 pending；交接包不授權遠端發布。summary 交接帶入 repo 的 meeting-summary-spec，要求 coverage、證據、決議／提案區分。
+9. Notion 明確保留 pending。會議記錄 job 只引用已確認的清洗稿與 meeting-summary-spec，要求 coverage、證據、決議／提案區分；匯入草稿不授權遠端發布。
 
 Settings 僅寫 `.local/desktop_settings.json`，不改 `.env`。模型切換不重做既有 raw；切換資料根目錄只切換清單，不搬移既有檔案。
 

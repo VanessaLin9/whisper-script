@@ -254,7 +254,7 @@ final class Desk: ObservableObject {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
             }
             self.notice = summary
-                ? "會議記錄交接已複製到剪貼簿。"
+                ? "會議記錄工作已建立，路徑已複製到剪貼簿。請交給 agent，完成後按匯入會議記錄。"
                 : "清洗工作已建立，路徑已複製到剪貼簿。請交給 agent，完成後按匯入。"
         }
     }
@@ -277,6 +277,13 @@ final class Desk: ObservableObject {
                 self.notice = "長度檢查通過。請對照預清洗稿，確認內容保真。"
                 self.refresh()
             }
+        }
+    }
+    func importNotes() {
+        guard let selected = selected else { return }
+        call(["action": "import_notes", "folder": selected]) { _ in
+            self.notice = "會議記錄草稿已匯入。請確認內容。這次沒有寫入 Notion。"
+            self.refresh()
         }
     }
     func approve() {
@@ -480,6 +487,7 @@ struct ContentView: View {
                         Label("內容已由你確認", systemImage: "checkmark.seal.fill").foregroundStyle(accent)
                         Spacer()
                         Button("準備會議記錄交接") { desk.handoff(summary: true) }.disabled(desk.profile.isEmpty)
+                        Button("匯入會議記錄") { desk.importNotes() }
                     }
                 }.font(.system(size: 12)).disabled(desk.busy)
             }

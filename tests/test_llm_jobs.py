@@ -112,7 +112,7 @@ class CleanJobContractTests(unittest.TestCase):
         segment = plan_segments(cues)[0]
         out = self.outbox / "seg-01.txt"
         out.write_text(render_segment(segment), encoding="utf-8")
-        job = {"job_id": "clean-test", "segments": {"items": [{
+        job = {"job_id": "clean-test", "stage": "clean", "segments": {"items": [{
             "id": "seg-01", "output_order": 1, "outbox_path": str(out),
         }]}}
         result = {"schema_version": 1, "job_id": "clean-test", "stage": "clean", "status": "done", "segments": [{

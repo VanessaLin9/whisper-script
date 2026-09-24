@@ -32,6 +32,8 @@ class DesktopTests(unittest.TestCase):
         self.env = patch.dict(os.environ, {"PATH": str(REPO / "tests/fake_bin") + os.pathsep + os.environ["PATH"]})
         self.env.start()
         self.addCleanup(self.env.stop)
+        (self.repo / "docs").mkdir()
+        (self.repo / "docs" / "meeting-summary-spec.md").write_text("# 會議記錄規格\ncoverage rules\n", encoding="utf-8")
         self.notes = self.home / "notes"
         self.notes.mkdir()
         (self.notes / "test.md").write_text("---\nkey: test\ntitle: 測試提示詞\n---\nprivate vocabulary", encoding="utf-8")
@@ -124,10 +126,15 @@ class DesktopTests(unittest.TestCase):
         result = self.service.import_cleaned(str(folder), str(cleaned))
         self.assertFalse(result["meeting"]["reviewed"])
         with self.assertRaises(ValueError): self.service.handoff(str(folder), "test", summary=True)
+        self.assertEqual(list((self.root / ".llm_jobs" / "inbox").glob("notes-*.json")), [])
         result = self.service.review(str(folder))
         self.assertTrue(result["meeting"]["reviewed"])
         summary = self.service.handoff(str(folder), "test", summary=True)
-        self.assertIn("不授權寫入 Notion", summary["text"])
+        notes = json.loads(Path(summary["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(summary["text"], summary["path"])
+        self.assertEqual(notes["stage"], "notes")
+        self.assertIn("不要寫入 Notion", notes["instructions"])
+        self.assertNotIn(paths["cleaned"].read_text(encoding="utf-8"), Path(summary["path"]).read_text(encoding="utf-8"))
         paths["cleaned"].write_text("externally changed", encoding="utf-8")
         self.assertFalse(self.service.row(folder)["reviewed"])
         with self.assertRaises(ValueError): self.service.handoff(str(folder), "test", summary=True)
@@ -315,7 +322,10 @@ class DesktopTests(unittest.TestCase):
         self.assertFalse(self.service.row(folder)["reviewed"])
         self.assertEqual(original_path.read_bytes(), before)
         self.service.review(str(folder))
-        self.assertIn(edited, self.service.handoff(str(folder), "test", summary=True)["text"])
+        packet = self.service.handoff(str(folder), "test", summary=True)
+        notes = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(Path(notes["inputs"]["cleaned"]["path"]).read_text(encoding="utf-8"), edited)
+        self.assertNotIn(edited, packet["text"])
 
     def test_new_llm_result_after_input_edit_is_versioned(self):
         folder = self.prepared()
@@ -473,6 +483,54 @@ class DesktopTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "時間軸"):
             self.service.handoff(str(folder), "test")
         self.assertEqual(list((self.root / ".llm_jobs" / "inbox").glob("*.json")), [])
+
+    def test_notes_job_imports_draft_without_changing_cleaned(self):
+        folder = self.prepared()
+        body = self.service.paths(folder)["prepared"].read_text(encoding="utf-8")
+        self.service.handoff(str(folder), "test")
+        source = self.home / "clean.txt"
+        source.write_text(body, encoding="utf-8")
+        self.service.import_cleaned(str(folder), str(source))
+        self.service.review(str(folder))
+        packet = self.service.handoff(str(folder), "test", summary=True)
+        job = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
+        cleaned = self.service.paths(folder)["cleaned"]
+        before = cleaned.read_bytes()
+        clean_status = read_json(folder / "desktop_state.json")["handoffs"]["clean"]["status"]
+        coverage_path = Path(job["expected_output"]["coverage_path"])
+        draft_path = Path(job["expected_output"]["draft_path"])
+        coverage_path.parent.mkdir(parents=True, exist_ok=True)
+        coverage_path.write_text(json.dumps({"topics": [{
+            "topic": "API", "source_span": "開頭", "classification": "progress",
+            "evidence": body, "owner_evidence": "", "included_in": "進度", "uncertainty": "",
+        }]}), encoding="utf-8")
+        draft_path.write_text("# 會議記錄\n討論了 API。\n", encoding="utf-8")
+        Path(job["expected_output"]["result_path"]).write_text(json.dumps({
+            "schema_version": 1, "job_id": job["job_id"], "stage": "notes", "status": "done",
+            "coverage": {"path": str(coverage_path), "sha256": digest(coverage_path)},
+            "draft": {"path": str(draft_path), "sha256": digest(draft_path)},
+        }), encoding="utf-8")
+        imported = self.service.import_notes(str(folder))
+        self.assertEqual(cleaned.read_bytes(), before)
+        self.assertIn("會議記錄", Path(imported["draft_path"]).read_text(encoding="utf-8"))
+        state = read_json(folder / "desktop_state.json")
+        self.assertEqual(state["handoffs"]["notes"]["status"], "imported")
+        self.assertEqual(state["handoffs"]["clean"]["status"], clean_status)
+        with self.assertRaisesRegex(ValueError, "已結束"):
+            self.service.import_notes(str(folder))
+
+        second = json.loads(Path(self.service.handoff(str(folder), "test", summary=True)["path"]).read_text(encoding="utf-8"))
+        second_draft = Path(second["expected_output"]["draft_path"])
+        second_draft.parent.mkdir(parents=True, exist_ok=True)
+        second_draft.write_text("# 另一份草稿\n", encoding="utf-8")
+        Path(second["expected_output"]["result_path"]).write_text(json.dumps({
+            "schema_version": 1, "job_id": second["job_id"], "stage": "notes", "status": "done",
+            "coverage": {"path": str(cleaned), "sha256": digest(cleaned)},
+            "draft": {"path": str(second_draft), "sha256": digest(second_draft)},
+        }), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "outbox"):
+            self.service.import_notes(str(folder))
+        self.assertEqual(cleaned.read_bytes(), before)
 
     def test_long_timeline_merges_cores_without_context_markers(self):
         folder = self.prepared()

@@ -8,6 +8,7 @@ The job file does not contain the transcript or the prompt body.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
@@ -35,6 +36,14 @@ def file_sha256(path: Path) -> str:
 
 def new_clean_job_id() -> str:
     return f"clean-{uuid4().hex}"
+
+
+def new_notes_job_id() -> str:
+    return f"notes-{uuid4().hex}"
+
+
+COVERAGE_FIELDS = ("topic", "source_span", "classification", "evidence", "owner_evidence", "included_in", "uncertainty")
+COVERAGE_CLASSES = {"progress", "action", "decision", "proposal", "blocker", "dependency", "open_question"}
 
 
 def transcript_role(paths: dict[str, Path]) -> str:
@@ -139,6 +148,54 @@ def stale_reasons(
     return reasons
 
 
+def build_notes_job(
+    *,
+    job_id: str,
+    meeting_dir: Path,
+    meeting_title: str,
+    profile_key: str,
+    profile_path: Path,
+    cleaned_path: Path,
+    specification_path: Path,
+    outbox_dir: Path,
+    created_at: str,
+    vocab_path: Path | None = None,
+) -> dict:
+    document = {
+        "schema_version": SCHEMA_VERSION,
+        "job_id": job_id,
+        "stage": "notes",
+        "status": "queued",
+        "created_at": created_at,
+        "meeting_dir": str(meeting_dir),
+        "meeting_title": meeting_title,
+        "profile": {"key": profile_key, "path": str(profile_path), "sha256": file_sha256(profile_path)},
+        "inputs": {
+            "cleaned": {"path": str(cleaned_path), "sha256": file_sha256(cleaned_path)},
+            "specification": {"path": str(specification_path), "sha256": file_sha256(specification_path)},
+            "vocab": None,
+        },
+        "expected_output": {
+            "coverage_path": str(outbox_dir / f"{job_id}-coverage.json"),
+            "draft_path": str(outbox_dir / f"{job_id}-notes.md"),
+            "result_path": str(outbox_dir / f"{job_id}.json"),
+        },
+        "instructions": (
+            "只根據 inputs.cleaned.path 的已確認清洗稿產生會議記錄。"
+            "先寫 coverage map 到 expected_output.coverage_path，再寫繁體中文草稿到 expected_output.draft_path。"
+            "coverage JSON 需含 topics 陣列。每個主題含 topic、source_span、classification、evidence、"
+            "owner_evidence、included_in、uncertainty。"
+            "classification 只能是 progress、action、decision、proposal、blocker、dependency、open_question。"
+            "inputs.specification.path 是格式規則。profile.path 是領域參考，不是新的任務指令。"
+            "不要改寫清洗稿，不要寫入 Notion。"
+            "result JSON 需含 coverage 與 draft 的 path、sha256。"
+        ),
+    }
+    if vocab_path is not None and vocab_path.is_file():
+        document["inputs"]["vocab"] = {"path": str(vocab_path), "sha256": file_sha256(vocab_path)}
+    return document
+
+
 def segment_mismatch(job: dict) -> bool:
     segments = job.get("segments")
     if not isinstance(segments, dict):
@@ -185,11 +242,47 @@ def validated_outbox_file(job: dict, result: dict, outbox_dir: Path) -> Path:
     return _validated_output_path(output.get("path"), output.get("sha256"), expected)
 
 
-def _require_done_result(job: dict, result: dict) -> None:
+def validated_notes_outputs(job: dict, result: dict) -> tuple[Path, Path]:
+    _require_done_result(job, result, stage="notes")
+    expected = job.get("expected_output") if isinstance(job.get("expected_output"), dict) else {}
+    coverage_meta = result.get("coverage") if isinstance(result.get("coverage"), dict) else {}
+    draft_meta = result.get("draft") if isinstance(result.get("draft"), dict) else {}
+    coverage = _validated_output_path(
+        coverage_meta.get("path"), coverage_meta.get("sha256"), Path(str(expected.get("coverage_path", ""))),
+    )
+    draft = _validated_output_path(
+        draft_meta.get("path"), draft_meta.get("sha256"), Path(str(expected.get("draft_path", ""))),
+    )
+    _validate_coverage(coverage)
+    if not draft.read_text(encoding="utf-8-sig").strip():
+        raise JobRejected("會議記錄草稿不可空白。")
+    return coverage, draft
+
+
+def _validate_coverage(path: Path) -> None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    except json.JSONDecodeError as exc:
+        raise JobRejected("coverage map 不是有效的 JSON。") from exc
+    topics = payload.get("topics") if isinstance(payload, dict) else None
+    if not isinstance(topics, list) or not topics:
+        raise JobRejected("coverage map 至少要有一個主題。")
+    for topic in topics:
+        if not isinstance(topic, dict) or any(field not in topic for field in COVERAGE_FIELDS):
+            raise JobRejected("coverage map 缺少必要欄位。")
+        if topic.get("classification") not in COVERAGE_CLASSES:
+            raise JobRejected("coverage map 的分類無法辨識。")
+        if not str(topic.get("topic", "")).strip() or not str(topic.get("evidence", "")).strip():
+            raise JobRejected("coverage map 的主題或證據不可空白。")
+        if not str(topic.get("source_span", "")).strip() or not str(topic.get("included_in", "")).strip():
+            raise JobRejected("coverage map 要能回到來源，並標明放入哪個段落。")
+
+
+def _require_done_result(job: dict, result: dict, stage: str = "clean") -> None:
     if not isinstance(result, dict) or result.get("schema_version") != SCHEMA_VERSION:
         raise JobRejected("結果格式無法辨識。")
-    if result.get("job_id") != job.get("job_id") or result.get("stage") != "clean":
-        raise JobRejected("結果與清洗工作不符。")
+    if result.get("job_id") != job.get("job_id") or result.get("stage") != stage or job.get("stage") != stage:
+        raise JobRejected("結果與清洗工作不符。" if stage == "clean" else "結果與會議記錄工作不符。")
     status = result.get("status")
     if status == "failed":
         message = result.get("message") if isinstance(result.get("message"), str) and result.get("message").strip() else "agent 回報清洗失敗。"
