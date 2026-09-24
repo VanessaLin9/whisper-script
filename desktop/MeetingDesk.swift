@@ -253,11 +253,21 @@ final class Desk: ObservableObject {
             if let path = value["path"] as? String {
                 NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: path)])
             }
-            self.notice = "最新訂正內容與時間軸已放入交接包，並複製到剪貼簿。可貼上或把檔案拖給 LLM。"
+            self.notice = summary
+                ? "會議記錄交接已複製到剪貼簿。"
+                : "清洗工作已建立，路徑已複製到剪貼簿。請交給 agent，完成後按匯入。"
         }
     }
     func importCleaned() {
         guard let selected = selected else { return }
+        if meeting?.cleaned != true {
+            call(["action": "import_job", "folder": selected]) { _ in
+                self.previewKind = "cleaned"
+                self.notice = "長度檢查通過。請對照預清洗稿，確認內容保真。"
+                self.refresh()
+            }
+            return
+        }
         let panel = NSOpenPanel()
         panel.title = "匯入 LLM 回傳的完整清洗逐字稿"
         panel.allowedContentTypes = [.plainText]
@@ -458,7 +468,7 @@ struct ContentView: View {
                         Text(desk.profiles[i]["label"] as? String ?? "").tag(desk.profiles[i]["key"] as? String ?? "")
                     }
                 }.frame(maxWidth: 260)
-                Button("準備 LLM 交接") { desk.handoff() }.disabled(!meeting.prepared || desk.profile.isEmpty)
+                Button("清洗") { desk.handoff() }.disabled(!meeting.prepared || desk.profile.isEmpty)
                 Button(meeting.cleaned ? "重新檢查清洗稿" : "匯入清洗稿", action: desk.importCleaned).disabled(!meeting.prepared)
                 Spacer(minLength: 0)
             }.disabled(desk.busy)

@@ -112,8 +112,12 @@ class DesktopTests(unittest.TestCase):
         folder = self.prepared()
         paths = self.service.paths(folder)
         packet = self.service.handoff(str(folder), "test")
-        self.assertIn("繁體中文", packet["text"])
-        self.assertIn("private vocabulary", packet["text"])
+        job = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(packet["text"], str(Path(packet["path"])))
+        self.assertEqual(job["stage"], "clean")
+        self.assertIsNone(job["segments"])
+        self.assertNotIn("private vocabulary", Path(packet["path"]).read_text(encoding="utf-8"))
+        self.assertIn("private vocabulary", Path(job["profile"]["path"]).read_text(encoding="utf-8"))
         self.assertTrue(Path(packet["path"]).is_file())
         cleaned = self.home / "result.txt"
         cleaned.write_text(paths["prepared"].read_text(encoding="utf-8") + "。", encoding="utf-8")
@@ -196,7 +200,8 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(self.service.meetings()["meetings"][0]["title"], "新的 AI 會議名稱")
         self.assertEqual(original_files, sorted(p.name for p in folder.iterdir()))
         self.assertEqual(original_hashes, {k: digest(p) for k, p in self.service.paths(folder).items() if p.is_file()})
-        self.assertIn("會議：新的 AI 會議名稱", self.service.handoff(str(folder), "test")["text"])
+        job = json.loads(Path(self.service.handoff(str(folder), "test")["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(job["meeting_title"], "新的 AI 會議名稱")
         with self.assertRaisesRegex(ValueError, "已在別處更新"):
             self.service.rename(str(folder), "過期名稱", "中文 AI 會議")
         for invalid in ["  ", "不合法\n名稱", "字" * 201]:
@@ -213,7 +218,10 @@ class DesktopTests(unittest.TestCase):
         restarted = DesktopService(self.repo, self.service.settings)
         self.assertEqual(restarted.preview(str(folder), "corrected")["text"], text)
         packet = restarted.handoff(str(folder), "test")
-        self.assertIn(text, packet["text"])
+        job = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(job["inputs"]["transcript"]["role"], "corrected")
+        self.assertEqual(Path(job["inputs"]["transcript"]["path"]).read_text(encoding="utf-8"), text)
+        self.assertNotIn(text, packet["text"])
         self.assertEqual(before, {k: digest(p) for k, p in paths.items() if p.is_file()})
 
     def test_each_correction_preserves_previous_version(self):
@@ -246,8 +254,12 @@ class DesktopTests(unittest.TestCase):
                          [(c["number"], c["time"]) for c in saved["cues"]])
         self.assertEqual([c["text"] for c in saved["cues"]], [c["text"] for c in edits])
         packet = self.service.handoff(str(folder), "test")
-        self.assertIn("訂正 第一段 API 名稱", packet["text"])
+        job = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
+        self.assertEqual(job["inputs"]["srt"]["role"], "corrected")
+        self.assertEqual(job["inputs"]["srt"]["path"], saved["path"])
+        self.assertIn("訂正 第一段 API 名稱", Path(saved["path"]).read_text(encoding="utf-8"))
         self.assertIn(saved["path"], packet["files"])
+        self.assertNotIn("訂正 第一段 API 名稱", packet["text"])
 
     def test_srt_rejects_times_order_counts_and_timestamp_injection(self):
         folder = self.prepared()
@@ -354,6 +366,92 @@ class DesktopTests(unittest.TestCase):
         path.write_text("外部變更")
         with self.assertRaisesRegex(ValueError, "外部變更"):
             self.service.handoff(str(folder), "test")
+
+    def write_outbox(self, packet, text, **overrides):
+        job = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
+        out = Path(overrides.get("output_path", job["expected_output"]["outbox_path"]))
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(text, encoding="utf-8")
+        result = {
+            "schema_version": 1,
+            "job_id": overrides.get("job_id", job["job_id"]),
+            "stage": overrides.get("stage", "clean"),
+            "status": overrides.get("status", "done"),
+            "output": {"path": str(out.resolve()), "sha256": overrides.get("sha256", digest(out))},
+        }
+        if "message" in overrides:
+            result["message"] = overrides["message"]
+        Path(job["expected_output"]["result_path"]).write_text(json.dumps(result), encoding="utf-8")
+        return job
+
+    def test_clean_job_imports_outbox_without_embedding_transcript(self):
+        folder = self.prepared()
+        (folder / "meeting_vocab.md").write_text("Athena\n", encoding="utf-8")
+        raw = self.service.paths(folder)["raw"].read_bytes()
+        packet = self.service.handoff(str(folder), "test")
+        job = self.write_outbox(packet, self.service.paths(folder)["prepared"].read_text(encoding="utf-8") + "。")
+        self.assertEqual(job["inputs"]["vocab"]["path"], str(folder / "meeting_vocab.md"))
+        self.assertNotIn("transcript for", Path(packet["path"]).read_text(encoding="utf-8"))
+        imported = self.service.import_job(str(folder))
+        self.assertFalse(imported["meeting"]["reviewed"])
+        self.assertTrue(imported["meeting"]["cleaned"])
+        self.assertEqual(self.service.paths(folder)["raw"].read_bytes(), raw)
+        state = read_json(folder / "desktop_state.json")
+        self.assertEqual(state["handoffs"]["clean"]["status"], "imported")
+        self.assertFalse(Path(packet["path"]).exists())
+        archived = json.loads((self.root / ".llm_jobs" / "archive" / Path(packet["path"]).name).read_text(encoding="utf-8"))
+        self.assertEqual(archived["status"], "imported")
+        self.assertEqual([item["id"] for item in self.service.meetings()["meetings"]], [str(folder)])
+
+    def test_profile_or_output_mismatch_does_not_publish_cleaned(self):
+        folder = self.prepared()
+        packet = self.service.handoff(str(folder), "test")
+        note = self.notes / "test.md"
+        note.write_text(note.read_text(encoding="utf-8") + "\nextra", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "提示詞"):
+            self.service.import_job(str(folder))
+        self.assertEqual(json.loads(Path(packet["path"]).read_text(encoding="utf-8"))["status"], "stale")
+        self.assertEqual(read_json(folder / "desktop_state.json")["handoffs"]["clean"]["status"], "stale")
+        self.assertFalse(self.service.paths(folder)["cleaned"].exists())
+
+    def test_outbox_result_cannot_point_outside_the_job_file(self):
+        folder = self.prepared()
+        packet = self.service.handoff(str(folder), "test")
+        job = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
+        raw = self.service.paths(folder)["raw"]
+        before = raw.read_bytes()
+        result = {
+            "schema_version": 1, "job_id": job["job_id"], "stage": "clean", "status": "done",
+            "output": {"path": str(raw), "sha256": digest(raw)},
+        }
+        Path(job["expected_output"]["result_path"]).write_text(json.dumps(result), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "outbox"):
+            self.service.import_job(str(folder))
+        self.assertEqual(raw.read_bytes(), before)
+        self.assertFalse(self.service.paths(folder)["cleaned"].exists())
+
+    def test_short_or_failed_outbox_is_rejected(self):
+        folder = self.prepared()
+        packet = self.service.handoff(str(folder), "test")
+        self.write_outbox(packet, "短摘要")
+        with self.assertRaisesRegex(ValueError, "20%"):
+            self.service.import_job(str(folder))
+        self.assertFalse(self.service.paths(folder)["cleaned"].exists())
+        self.assertEqual(read_json(folder / "desktop_state.json")["handoffs"]["clean"]["status"], "queued")
+
+        self.write_outbox(packet, "仍然太短", status="failed", message="agent 無法完成")
+        with self.assertRaisesRegex(ValueError, "無法完成"):
+            self.service.import_job(str(folder))
+        self.assertEqual(read_json(folder / "desktop_state.json")["handoffs"]["clean"]["status"], "failed")
+
+    def test_new_clean_job_archives_the_previous_one(self):
+        folder = self.prepared()
+        first = self.service.handoff(str(folder), "test")
+        second = self.service.handoff(str(folder), "test")
+        self.assertFalse(Path(first["path"]).exists())
+        archived = json.loads((self.root / ".llm_jobs" / "archive" / Path(first["path"]).name).read_text(encoding="utf-8"))
+        self.assertEqual(archived["status"], "stale")
+        self.assertEqual(read_json(folder / "desktop_state.json")["handoffs"]["clean"]["job_id"], second["job_id"])
 
 
 if __name__ == "__main__":

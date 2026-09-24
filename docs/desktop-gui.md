@@ -1,10 +1,10 @@
 # Meeting Desk：本機桌面版本
 
-2026-09-07 / v0.2。原生 SwiftUI + 現有 Python service，無 localhost server、web hosting、OAuth 或付費 API。Python 透過 stdin 接收單一 JSON 請求，stdout 回傳逐行進度與最終結果；不透過 shell 拼接使用者參數。
+2026-09-25 / v0.3。原生 SwiftUI + 現有 Python service，無 localhost server、web hosting、OAuth 或付費 API。Python 透過 stdin 接收單一 JSON 請求，stdout 回傳逐行進度與最終結果；不透過 shell 拼接使用者參數。
 
 ## 使用範圍
 
-原生 App 可拖曳匯入或選取單一音檔、確認錄音時間、瀏覽既有會議、轉錄、預清洗、取消／續跑、準備 LLM 清洗交接、匯入完整清洗稿、預覽與內容確認、準備會議記錄交接。預設多語言 medium、zh。ASR 不保證字體為繁體；繁體校正與專有名詞保真交由後續 LLM 清洗。
+原生 App 可拖曳匯入或選取單一音檔、確認錄音時間、瀏覽既有會議、轉錄、預清洗、取消／續跑、建立清洗 job、從 outbox 匯入清洗稿、預覽與內容確認、準備會議記錄交接。預設多語言 medium、zh。ASR 不保證字體為繁體；繁體校正與專有名詞保真交由後續 LLM 清洗。清洗 job 只含路徑與 hash，放在會議資料根目錄的 `.llm_jobs/inbox`。Agent 把結果寫進 `.llm_jobs/outbox`，不寫 `desktop_state.json`。長會議切段與 notes job 尚未實作。
 
 內建錄音、批次佇列、Drive GUI、LLM API、Notion 發布尚未實作。使用者可繼續使用語音備忘錄；現有 shell 入口仍保留。
 
@@ -14,7 +14,7 @@
 - 在原始／預清洗稿按「編輯文字」，儲存成「人工訂正」版本。該分頁顯示使用中訂正稿，重新選擇會議時優先顯示，後續 GUI 清洗交接使用訂正稿作語意輸入與長度基準。
 - 清洗稿也可按「編輯文字」修正。每次保存均保留原檔和之前的版本，撤銷舊的品質通過狀態。使用者重新確認後，會議記錄交接使用最新清洗稿。縮短超過 20% 的手動修改可保存但不能通過品質檢查。
 - 「時間軸 → 編輯文字」逐段呈現 SRT：序號與起訖時間是唯讀標籤，只有字幕文字可輸入。後端只接受 `{id,text}`，拒絕新增／刪除／重排字幕、完整 SRT、時間欄位、時間碼注入或空白段落。多行字幕可以保留；原始 SRT 位元組不變。
-- 字幕訂正與 TXT 訂正分開保存，不會推測段落對應後自動覆蓋對方。清洗交接包內含目前 SRT 參考，若文字不同，以訂正 TXT 為主要內容來源。
+- 字幕訂正與 TXT 訂正分開保存，不會推測段落對應後自動覆蓋對方。清洗 job 引用目前有效的訂正 TXT 與訂正 SRT；若文字不同，以訂正 TXT 為主要內容來源。
 - 編輯採 modal 視窗；儲存中禁止繼續輸入，取消有未儲存提醒，結束 App 也會提醒先處理修改。儲存失敗保留畫面輸入並提供複製按鈕；版本衝突不覆蓋新內容。
 
 新增 `manual_revisions/` 存放 UUID 命名的 TXT / SRT 版本，`desktop_state.json.edits` 記錄各類目前路徑、SHA-256、來源檔 hashes、保存時間，`edit_history` 保留歷程。state 只保存 metadata，不保存逐字稿內容。修改前的 token 包含來源與使用中版本 hashes；後端在 per-meeting flock 內比較，過期編輯拒絕保存。
@@ -43,7 +43,8 @@
 
 - `desktop_state.json`：title、status、attempts、raw/prepared hashes、profile、prompt hash、handoff、quality。
 - `.desktop.lock`：flock 鎖檔，每場會議同時只有一個 GUI mutation。鎖檔可以存在，鎖在 process 結束後自動釋放。
-- `llm_handoff/clean-<timestamp>.txt` / `summary-<timestamp>.txt`：私有、版本化交接包，含選定 prompt 與逐字稿。只能保存在會議資料夾，不能提交 Git。
+- `<MeetingRecords>/.llm_jobs/inbox|outbox|archive`：清洗 job 與 agent 結果。Job JSON 不含逐字稿或提示詞內文。匯入成功後 job 移到 archive。
+- `llm_handoff/summary-<timestamp>.txt`：會議記錄交接仍是私有全文包，留在會議資料夾，不能提交 Git。notes job 尚未取代它。
 
 GUI 清單可以讀取 legacy raw workspace；單一資料夾損壞／多份 raw 時列出警告，不阻擋其他會議。首次不自動選擇最新會議。
 
@@ -53,8 +54,8 @@ GUI 清單可以讀取 legacy raw workspace；單一資料夾損壞／多份 raw
 2. 轉錄成功後先保存 raw，再產生 prepared + manifest。已有 raw 時不重跑 Whisper；已有 prepared 必須與 manifest 的 source/output SHA-256 一致才重用。原始產物不覆寫。
 3. 取消傳到現有 core；core 負責終止／回收子程序、清掉本次 partial artifacts。音檔副本保留。失敗／取消保存 attempt 結果，可回同一會議重試。
 4. 強制關閉後，`running` 不代表成功；重啟顯示可續跑。已有來源／輸出衝突時 fail closed，不能為了續跑刪除不明產物。
-5. 清洗交接必須選定有本機 note 的 profile；packet 記錄 prepared/raw/prompt hashes。缺本機 note 時停止，沿用 README 的 prompt 同步入口。
-6. 匯入清洗稿需匹配交接的來源 hashes、非空、縮短不超過 20%；以人工訂正稿（沒有才用 prepared）字元數為主要長度基準。檢查通過後仍是 `pending_review`，不是語意保真的自動證明。
+5. 清洗 job 必須選定有本機 note 的 profile，並記錄目前有效逐字稿、SRT 與 profile 的路徑和 hash。缺本機 note 時停止，沿用 README 的 prompt 同步入口。profile 或輸入變更會把 job 標成 stale。
+6. 匯入讀取該 job 約定的 outbox 檔，核對 job ID、來源 hash、輸出 hash 與檔案位置。清洗稿需非空、縮短不超過 20%；以人工訂正稿（沒有才用 prepared）字元數為主要長度基準。檢查通過後仍是 `pending_review`，不是語意保真的自動證明。舊的選檔匯入仍可用於重新檢查既有清洗稿。
 7. 使用者對照檢查後才設為 `passed`，保存 reviewer/time；展示與 summary 交接重新檢查 raw/prepared/cleaned hashes。檔案外部修改會失去已確認狀態。
 8. 已存在的 cleaned 不覆寫。可選取同一個 cleaned 檔做重新驗證／採納 legacy 產物；若匯入不同檔案，會另存人工版本目錄並更新目前路徑，舊版仍保留。
 9. Notion 明確保留 pending；交接包不授權遠端發布。summary 交接帶入 repo 的 meeting-summary-spec，要求 coverage、證據、決議／提案區分。
