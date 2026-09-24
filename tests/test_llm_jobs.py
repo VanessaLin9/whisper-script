@@ -110,7 +110,7 @@ class CleanJobContractTests(unittest.TestCase):
         escaped.mkdir()
         body = escaped / "seg-01.txt"
         body.write_text("核心清洗稿\n", encoding="utf-8")
-        linked = self.outbox / "jobdir"
+        linked = self.outbox / "clean-test"
         linked.symlink_to(escaped, target_is_directory=True)
         out = linked / "seg-01.txt"
         job = {"job_id": "clean-test", "stage": "clean", "segments": {"items": [{
@@ -120,7 +120,7 @@ class CleanJobContractTests(unittest.TestCase):
             "id": "seg-01", "output_order": 1, "path": str(out), "sha256": file_sha256(body),
         }]}
         with self.assertRaisesRegex(JobRejected, "符號連結"):
-            merged_segment_text(job, result)
+            merged_segment_text(job, result, self.outbox)
 
     def test_notes_coverage_symlink_is_rejected(self):
         cleaned = self.paths["cleaned"]
@@ -143,7 +143,7 @@ class CleanJobContractTests(unittest.TestCase):
                 "schema_version": 1, "job_id": "notes-test", "stage": "notes", "status": "done",
                 "coverage": {"path": str(coverage), "sha256": file_sha256(outside)},
                 "draft": {"path": str(draft), "sha256": file_sha256(draft)},
-            })
+            }, self.outbox)
 
     def test_non_object_json_is_a_contract_error(self):
         with self.assertRaisesRegex(JobRejected, "格式"):
@@ -157,6 +157,55 @@ class CleanJobContractTests(unittest.TestCase):
                 "schema_version": 1, "job_id": "clean-test", "stage": "clean", "status": "done",
                 "segments": [1],
             }, self.outbox)
+        with self.assertRaisesRegex(JobRejected, "格式"):
+            ensure_job_shape({"profile": {"path": 1}})
+        with self.assertRaisesRegex(JobRejected, "格式"):
+            ensure_job_shape({"job_id": "clean-test", "segments": {"items": [{"output_order": 1}]}})
+        with self.assertRaisesRegex(JobRejected, "格式"):
+            merged_segment_text(
+                {"job_id": "clean-test", "stage": "clean", "segments": {"items": [{"output_order": 1}]}},
+                {"schema_version": 1, "job_id": "clean-test", "stage": "clean", "status": "done", "segments": []},
+                self.outbox,
+            )
+
+    def test_tampered_output_path_cannot_leave_this_outbox(self):
+        other = self.root / "other" / ".llm_jobs" / "outbox" / "clean-test"
+        other.mkdir(parents=True)
+        body = other / "seg-01.txt"
+        body.write_text("核心清洗稿\n", encoding="utf-8")
+        job = {"job_id": "clean-test", "stage": "clean", "segments": {"items": [{
+            "id": "seg-01", "output_order": 1, "outbox_path": str(body),
+        }]}}
+        result = {"schema_version": 1, "job_id": "clean-test", "stage": "clean", "status": "done", "segments": [{
+            "id": "seg-01", "output_order": 1, "path": str(body), "sha256": file_sha256(body),
+        }]}
+        with self.assertRaisesRegex(JobRejected, "outbox"):
+            merged_segment_text(job, result, self.outbox)
+        self.assertEqual(body.read_text(encoding="utf-8"), "核心清洗稿\n")
+
+        cleaned = self.paths["cleaned"]
+        cleaned.write_text("已確認清洗稿\n", encoding="utf-8")
+        spec = self.root / "spec.md"
+        spec.write_text("規格\n", encoding="utf-8")
+        notes = build_notes_job(
+            job_id="notes-test", meeting_dir=self.meeting, meeting_title="示範會議",
+            profile_key="inno", profile_path=self.profile, cleaned_path=cleaned,
+            specification_path=spec, outbox_dir=self.outbox, created_at="2026-09-25T09:00:00+08:00",
+        )
+        foreign = self.root / "other" / ".llm_jobs" / "outbox"
+        coverage = foreign / "notes-test-coverage.json"
+        draft = foreign / "notes-test-notes.md"
+        coverage.write_text('{"topics":[{"topic":"API","source_span":"開頭","classification":"progress","evidence":"證據","owner_evidence":"","included_in":"進度","uncertainty":""}]}\n', encoding="utf-8")
+        draft.write_text("草稿\n", encoding="utf-8")
+        notes["expected_output"]["coverage_path"] = str(coverage)
+        notes["expected_output"]["draft_path"] = str(draft)
+        with self.assertRaisesRegex(JobRejected, "outbox"):
+            validated_notes_outputs(notes, {
+                "schema_version": 1, "job_id": "notes-test", "stage": "notes", "status": "done",
+                "coverage": {"path": str(coverage), "sha256": file_sha256(coverage)},
+                "draft": {"path": str(draft), "sha256": file_sha256(draft)},
+            }, self.outbox)
+        self.assertTrue(coverage.is_file())
 
     def test_sixty_eight_minutes_cover_every_cue_once(self):
         cues = load_timeline(self._write_srt(68 * 60 * 1000))
@@ -190,16 +239,17 @@ class CleanJobContractTests(unittest.TestCase):
     def test_segment_result_rejects_context_markers(self):
         cues = load_timeline(self._write_srt(60 * 1000))
         segment = plan_segments(cues)[0]
-        out = self.outbox / "seg-01.txt"
+        out = self.outbox / "clean-test" / "seg-01.txt"
+        out.parent.mkdir()
         out.write_text(render_segment(segment), encoding="utf-8")
         job = {"job_id": "clean-test", "stage": "clean", "segments": {"items": [{
-            "id": "seg-01", "output_order": 1, "outbox_path": str(out),
+            "id": "seg-01", "output_order": 1, "outbox_path": str(self.root / "ignored.txt"),
         }]}}
         result = {"schema_version": 1, "job_id": "clean-test", "stage": "clean", "status": "done", "segments": [{
             "id": "seg-01", "output_order": 1, "path": str(out), "sha256": file_sha256(out),
         }]}
         with self.assertRaisesRegex(JobRejected, "上下文"):
-            merged_segment_text(job, result)
+            merged_segment_text(job, result, self.outbox)
 
     def _write_srt(self, duration_ms: int, cue_ms: int = 30_000) -> Path:
         start = 0

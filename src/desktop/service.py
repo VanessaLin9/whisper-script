@@ -483,12 +483,15 @@ class DesktopService:
             return
         path = Path(record.get("job_path", ""))
         if path.is_file():
-            job = read_json(path)
-            if not isinstance(job, dict):
-                raise ValueError("工作格式無法辨識。")
-            job["status"] = status
+            try:
+                loaded = read_json(path)
+            except json.JSONDecodeError:
+                loaded = None
+            job = loaded if isinstance(loaded, dict) else None
             if path.parent.name == "archive":
-                atomic_json(path, job)
+                if job is not None:
+                    job["status"] = status
+                    atomic_json(path, job)
                 record["status"] = status
                 return
             archive = self.root / ".llm_jobs" / "archive"
@@ -496,11 +499,16 @@ class DesktopService:
             source_dir = path.parent / path.stem
             if source_dir.is_dir():
                 dest_dir = archive / source_dir.name
-                self._retarget_segments(job, source_dir, dest_dir)
+                if job is not None:
+                    self._retarget_segments(job, source_dir, dest_dir)
                 shutil.move(source_dir, dest_dir)
             dest = archive / path.name
-            atomic_json(dest, job)
-            path.unlink(missing_ok=True)
+            if job is not None:
+                job["status"] = status
+                atomic_json(dest, job)
+                path.unlink(missing_ok=True)
+            else:
+                shutil.move(path, dest)
             record.update(status=status, job_path=str(dest))
             return
         record["status"] = status
@@ -512,6 +520,8 @@ class DesktopService:
             return
 
         def swap(value: str) -> str:
+            if not isinstance(value, str):
+                return value
             path = Path(value)
             try:
                 relative = path.resolve().relative_to(source.resolve())
@@ -593,7 +603,9 @@ class DesktopService:
                 raise ValueError("清洗工作與這場會議不符。")
             if job.get("status") in {"failed", "imported"}:
                 raise ValueError("這個清洗工作已結束，請重新建立。")
-            note = Path(job.get("profile", {}).get("path", ""))
+            profile = job.get("profile") if isinstance(job.get("profile"), dict) else {}
+            profile_path = profile.get("path") if isinstance(profile.get("path"), str) else ""
+            note = Path(profile_path)
             reasons = stale_reasons(
                 job, transcript_sha256=file_sha256(paths["input"]) if paths["input"].is_file() else "",
                 srt_sha256=file_sha256(paths["srt"]) if paths["srt"].is_file() else "",
@@ -620,7 +632,7 @@ class DesktopService:
                 raise ValueError("結果格式無法辨識。") from exc
             try:
                 if isinstance(job.get("segments"), dict):
-                    text = merged_segment_text(job, result)
+                    text = merged_segment_text(job, result, outbox)
                 else:
                     text = validated_outbox_file(job, result, outbox).read_text(encoding="utf-8-sig")
             except JobRejected as exc:
@@ -687,7 +699,7 @@ class DesktopService:
             cleaned_before = cleaned.read_bytes()
             # notes 匯入不得改寫清洗稿，也不改 clean 的 handoff 狀態（PR #13）。
             try:
-                coverage, draft = validated_notes_outputs(job, result)
+                coverage, draft = validated_notes_outputs(job, result, outbox)
             except JobRejected as exc:
                 if exc.job_status:
                     self._write_job_status(record, exc.job_status)

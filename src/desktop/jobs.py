@@ -212,17 +212,27 @@ def ensure_job_shape(job: object) -> dict:
         for key in ("transcript", "srt", "cleaned", "specification", "vocab"):
             if key in inputs and inputs[key] is not None and not isinstance(inputs[key], dict):
                 raise JobRejected("工作格式無法辨識。")
+            _require_path_fields(inputs.get(key) if isinstance(inputs, dict) else None)
+    profile = job.get("profile")
+    if isinstance(profile, dict):
+        _require_path_fields(profile)
     if "meeting_dir" in job and not isinstance(job["meeting_dir"], str):
         raise JobRejected("工作格式無法辨識。")
-    if "job_id" in job and not isinstance(job["job_id"], str):
+    if "job_id" in job and not _safe_job_id(job.get("job_id")):
         raise JobRejected("工作格式無法辨識。")
     segments = job.get("segments")
     if segments is not None and not isinstance(segments, dict):
         raise JobRejected("工作格式無法辨識。")
     if isinstance(segments, dict):
+        for key in ("directory", "manifest_path"):
+            if key in segments and not isinstance(segments[key], str):
+                raise JobRejected("工作格式無法辨識。")
         items = segments.get("items", [])
-        if not isinstance(items, list) or any(not isinstance(item, dict) for item in items):
+        if not isinstance(items, list):
             raise JobRejected("工作格式無法辨識。")
+        for item in items:
+            if not _segment_item_shape(item):
+                raise JobRejected("工作格式無法辨識。")
     return job
 
 
@@ -233,12 +243,43 @@ def ensure_result_shape(result: object) -> dict:
     for key in ("output", "coverage", "draft"):
         if key in result and result[key] is not None and not isinstance(result[key], dict):
             raise JobRejected("結果格式無法辨識。")
+    for key in ("output", "coverage", "draft"):
+        if isinstance(result.get(key), dict):
+            _require_path_fields(result[key])
     segments = result.get("segments")
     if segments is not None and (
-        not isinstance(segments, list) or any(not isinstance(item, dict) for item in segments)
+        not isinstance(segments, list) or any(not _segment_item_shape(item) for item in segments)
     ):
         raise JobRejected("結果格式無法辨識。")
     return result
+
+
+def _require_path_fields(value: object) -> None:
+    if not isinstance(value, dict):
+        return
+    for key in ("path", "sha256"):
+        if key in value and not isinstance(value[key], str):
+            raise JobRejected("工作格式無法辨識。")
+
+
+def _segment_item_shape(item: object) -> bool:
+    if not isinstance(item, dict) or not isinstance(item.get("id"), str) or not item.get("id"):
+        return False
+    order = item.get("output_order")
+    if isinstance(order, bool) or not isinstance(order, int):
+        return False
+    for key in ("path", "sha256", "outbox_path"):
+        if key in item and not isinstance(item[key], str):
+            return False
+    return True
+
+
+def _safe_job_id(job_id: object) -> str:
+    if not isinstance(job_id, str) or not job_id or job_id in {".", ".."}:
+        raise JobRejected("工作格式無法辨識。")
+    if "/" in job_id or "\\" in job_id:
+        raise JobRejected("工作格式無法辨識。")
+    return job_id
 
 
 def segment_mismatch(job: dict) -> bool:
@@ -251,16 +292,22 @@ def segment_mismatch(job: dict) -> bool:
         path = Path(item["path"])
         if not path.is_file() or file_sha256(path) != item.get("sha256"):
             return True
-    manifest = Path(segments.get("manifest_path", ""))
+    manifest_path = segments.get("manifest_path", "")
+    if not isinstance(manifest_path, str):
+        return True
+    manifest = Path(manifest_path)
     return not manifest.is_file() or file_sha256(manifest) != segments.get("sha256")
 
 
-def merged_segment_text(job: dict, result: dict) -> str:
+def merged_segment_text(job: dict, result: dict, outbox_dir: Path) -> str:
     _require_done_result(job, result)
-    expected = (job.get("segments") or {}).get("items")
+    job_id = _safe_job_id(job.get("job_id"))
+    expected = (job.get("segments") or {}).get("items") if isinstance(job.get("segments"), dict) else None
     returned = result.get("segments")
     if not isinstance(expected, list) or not expected or not isinstance(returned, list):
         raise JobRejected("結果的分段數量與工作不符。")
+    if any(not _segment_item_shape(item) for item in expected):
+        raise JobRejected("工作格式無法辨識。")
     by_id = {}
     for item in returned:
         if isinstance(item, dict) and isinstance(item.get("id"), str):
@@ -269,10 +316,17 @@ def merged_segment_text(job: dict, result: dict) -> str:
         raise JobRejected("結果的分段數量與工作不符。")
     parts = []
     for item in expected:
-        got = by_id.get(item["id"])
-        if not got or got.get("output_order") != item["output_order"] or not isinstance(item.get("outbox_path"), str):
+        if not isinstance(item, dict):
+            raise JobRejected("工作格式無法辨識。")
+        segment_id = item.get("id")
+        order = item.get("output_order")
+        if not isinstance(segment_id, str) or isinstance(order, bool) or not isinstance(order, int):
+            raise JobRejected("工作格式無法辨識。")
+        got = by_id.get(segment_id)
+        if not got or got.get("output_order") != order or segment_id != f"seg-{order:02d}":
             raise JobRejected("結果的分段順序與工作不符。")
-        path = _validated_output_path(got.get("path"), got.get("sha256"), Path(item["outbox_path"]))
+        # 期望路徑由目前的 outbox 與 job、段號決定，不採用 job JSON 裡可被改寫的 outbox_path（PR #13）。
+        path = _validated_output_path(got.get("path"), got.get("sha256"), outbox_dir / job_id / f"{segment_id}.txt")
         text = path.read_text(encoding="utf-8-sig").strip()
         if not text:
             raise JobRejected("分段清洗稿不可空白。")
@@ -289,16 +343,17 @@ def validated_outbox_file(job: dict, result: dict, outbox_dir: Path) -> Path:
     return _validated_output_path(output.get("path"), output.get("sha256"), expected)
 
 
-def validated_notes_outputs(job: dict, result: dict) -> tuple[Path, Path]:
+def validated_notes_outputs(job: dict, result: dict, outbox_dir: Path) -> tuple[Path, Path]:
     _require_done_result(job, result, stage="notes")
-    expected = job.get("expected_output") if isinstance(job.get("expected_output"), dict) else {}
+    job_id = _safe_job_id(job.get("job_id"))
     coverage_meta = result.get("coverage") if isinstance(result.get("coverage"), dict) else {}
     draft_meta = result.get("draft") if isinstance(result.get("draft"), dict) else {}
+    # coverage 與草稿的位置由目前的 outbox 與 job_id 決定，不讀 job JSON 裡的路徑（PR #13）。
     coverage = _validated_output_path(
-        coverage_meta.get("path"), coverage_meta.get("sha256"), Path(str(expected.get("coverage_path", ""))),
+        coverage_meta.get("path"), coverage_meta.get("sha256"), outbox_dir / f"{job_id}-coverage.json",
     )
     draft = _validated_output_path(
-        draft_meta.get("path"), draft_meta.get("sha256"), Path(str(expected.get("draft_path", ""))),
+        draft_meta.get("path"), draft_meta.get("sha256"), outbox_dir / f"{job_id}-notes.md",
     )
     _validate_coverage(coverage)
     if not draft.read_text(encoding="utf-8-sig").strip():

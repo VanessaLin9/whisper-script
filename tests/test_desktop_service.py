@@ -495,6 +495,16 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(read_json(folder / "desktop_state.json")["handoffs"]["clean"]["job_id"], first["job_id"])
         self.assertEqual(json.loads(Path(first["path"]).read_text(encoding="utf-8"))["status"], "queued")
 
+    def test_malformed_previous_job_does_not_block_the_next(self):
+        folder = self.prepared()
+        first = self.service.handoff(str(folder), "test")
+        Path(first["path"]).write_text("null", encoding="utf-8")
+        second = self.service.handoff(str(folder), "test")
+        self.assertTrue(Path(second["path"]).is_file())
+        archived = self.root / ".llm_jobs" / "archive" / Path(first["path"]).name
+        self.assertEqual(archived.read_text(encoding="utf-8"), "null")
+        self.assertEqual(read_json(folder / "desktop_state.json")["handoffs"]["clean"]["job_id"], second["job_id"])
+
     def test_notes_job_imports_draft_without_changing_cleaned(self):
         folder = self.prepared()
         body = self.service.paths(folder)["prepared"].read_text(encoding="utf-8")
