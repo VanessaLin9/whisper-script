@@ -1,8 +1,11 @@
-"""Inbox/outbox contract for one LLM clean job.
+"""Inbox/outbox contract for clean and notes jobs.
 
 Meeting Desk writes the inbox JSON and is the only writer of desktop state.
 An external agent reads paths and hashes, then writes the outbox result.
 The job file does not contain the transcript or the prompt body.
+
+PR #13：job 只含路徑與 hash。desktop_state.json 只由 Desk 在建立與匯入成功時寫。
+stale 由 Desk 比對 hash，不由 agent 宣告。notes 與 clean 的 stage 必須相符，不能互相匯入。
 """
 
 from __future__ import annotations
@@ -296,6 +299,7 @@ def _validated_output_path(raw_path: object, digest: object, expected: Path) -> 
         raise JobRejected("結果缺少輸出路徑或 hash。")
     path = Path(raw_path).expanduser().resolve()
     target = expected.resolve()
+    # 必須等於該 job 約定的那一個 outbox 檔，不能只是落在 outbox 目錄裡（PR #13）。
     if path.parent != target.parent or path != target:
         raise JobRejected("清洗結果必須放在這個工作約定的 outbox 檔案。")
     if not path.is_file():

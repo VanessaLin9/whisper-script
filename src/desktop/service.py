@@ -264,6 +264,7 @@ class DesktopService:
         rows, warnings = [], []
         if self.root.is_dir():
             for folder in sorted(self.root.iterdir(), reverse=True):
+                # .llm_jobs 沒有 source_meta 或 *_transcription.txt，不會被當成一場會議（PR #13）。
                 if folder.is_dir() and ((folder / "source_meta.json").exists() or list(folder.glob("*_transcription.txt"))):
                     try:
                         rows.append(self.row(folder))
@@ -508,6 +509,7 @@ class DesktopService:
 
     def _retire_previous_clean_job(self, state: dict) -> None:
         record = self._clean_record(state)
+        # 已匯入的 job 留在 archive，不被下一份標成 stale（PR #13）。notes 沿用同一規則。
         if not record or record.get("status") == "imported":
             return
         self._archive_clean_job(state, "stale")
@@ -660,6 +662,7 @@ class DesktopService:
             except json.JSONDecodeError as exc:
                 raise ValueError("結果格式無法辨識。") from exc
             cleaned_before = cleaned.read_bytes()
+            # notes 匯入不得改寫清洗稿，也不改 clean 的 handoff 狀態（PR #13）。
             try:
                 coverage, draft = validated_notes_outputs(job, result)
             except JobRejected as exc:

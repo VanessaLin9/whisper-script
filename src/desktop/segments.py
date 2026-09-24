@@ -3,6 +3,9 @@
 Cuts stay on cue boundaries. Each cue belongs to one core. Context is copied
 from neighboring cues so the cleaner can read across the seam, and merge keeps
 only the cores.
+
+PR #13：切在 cue 邊界，不依 TXT 字元切，因為訂正 TXT 與 SRT 分開保存。
+合併只接核心；上下文若出現在輸出必須拒絕。
 """
 
 from __future__ import annotations
@@ -69,6 +72,7 @@ def plan_segments(cues: list[dict]) -> list[dict]:
     while index < len(cues):
         core_start = cues[index]["start"]
         end_index = index
+        # 下一個 cue 的結束時間超出核心上限就停。單一 cue 長於 10 分鐘整段保留，不從中間切開（PR #13）。
         while end_index + 1 < len(cues) and cues[end_index + 1]["end"] - core_start <= CORE_MS:
             end_index += 1
         core = cues[index:end_index + 1]
