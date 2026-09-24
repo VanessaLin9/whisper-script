@@ -25,10 +25,13 @@ from src.desktop.jobs import (
     build_clean_job,
     created_timestamp,
     file_sha256,
+    merged_segment_text,
     new_clean_job_id,
+    segment_mismatch,
     stale_reasons,
     validated_outbox_file,
 )
+from src.desktop.segments import SegmentationError, write_job_segments
 from src.output_manager import SourceDescriptor, SourceKind, create_workspace, plan_workspace
 from src.output_manager.workspace import exclusive_write_text
 from src.postprocessing.preparer import prepare_file
@@ -392,10 +395,14 @@ class DesktopService:
             self._retire_previous_clean_job(state)
             inbox, outbox = self._job_dirs()
             job_id = new_clean_job_id()
+            try:
+                segments = write_job_segments(paths["srt"], inbox / job_id, outbox / job_id)
+            except SegmentationError as exc:
+                raise ValueError(str(exc)) from exc
             document = build_clean_job(
                 job_id=job_id, meeting_dir=folder, meeting_title=self.row(folder)["title"],
                 profile_key=profile, profile_path=note, paths=paths, outbox_dir=outbox,
-                created_at=created_timestamp(datetime.now(TZ)),
+                created_at=created_timestamp(datetime.now(TZ)), segments=segments,
             )
             job_path = inbox / f"{job_id}.json"
             atomic_json(job_path, document)
@@ -407,7 +414,7 @@ class DesktopService:
                 "job_id": job_id, "status": "queued", "job_path": str(job_path),
             }
             atomic_json(folder / STATE_NAME, state)
-            files = [str(job_path), str(body)]
+            files = [str(job_path), str(body), segments["manifest_path"]]
             if paths["srt"].is_file():
                 files.append(str(paths["srt"]))
             vocab = document["inputs"]["vocab"]
@@ -451,12 +458,38 @@ class DesktopService:
                 return
             archive = self.root / ".llm_jobs" / "archive"
             archive.mkdir(parents=True, exist_ok=True)
+            source_dir = path.parent / path.stem
+            if source_dir.is_dir():
+                dest_dir = archive / source_dir.name
+                self._retarget_segments(job, source_dir, dest_dir)
+                shutil.move(source_dir, dest_dir)
             dest = archive / path.name
             atomic_json(dest, job)
             path.unlink(missing_ok=True)
             record.update(status=status, job_path=str(dest))
             return
         record["status"] = status
+
+    @staticmethod
+    def _retarget_segments(job: dict, source: Path, dest: Path) -> None:
+        segments = job.get("segments")
+        if not isinstance(segments, dict):
+            return
+
+        def swap(value: str) -> str:
+            path = Path(value)
+            try:
+                relative = path.resolve().relative_to(source.resolve())
+            except ValueError:
+                return value
+            return str(dest / relative)
+
+        for key in ("directory", "manifest_path"):
+            if isinstance(segments.get(key), str):
+                segments[key] = swap(segments[key])
+        for item in segments.get("items") or []:
+            if isinstance(item.get("path"), str):
+                item["path"] = swap(item["path"])
 
     def _retire_previous_clean_job(self, state: dict) -> None:
         record = self._clean_record(state)
@@ -524,6 +557,8 @@ class DesktopService:
                 profile_sha256=file_sha256(note) if note.is_file() else "",
                 profile_path=str(note) if note.is_file() else "",
             )
+            if segment_mismatch(job):
+                reasons.append("segments")
             if reasons:
                 if state.get("handoff"):
                     state["handoff"]["status"] = "stale"
@@ -541,13 +576,16 @@ class DesktopService:
             except json.JSONDecodeError as exc:
                 raise ValueError("結果格式無法辨識。") from exc
             try:
-                output = validated_outbox_file(job, result, outbox)
+                if isinstance(job.get("segments"), dict):
+                    text = merged_segment_text(job, result)
+                else:
+                    text = validated_outbox_file(job, result, outbox).read_text(encoding="utf-8-sig")
             except JobRejected as exc:
                 if exc.job_status:
                     self._write_job_status(record, exc.job_status)
                     atomic_json(folder / STATE_NAME, state)
                 raise
-            self._store_cleaned(folder, state, paths, output.read_text(encoding="utf-8-sig"), revalidate=False)
+            self._store_cleaned(folder, state, paths, text, revalidate=False)
             self._archive_clean_job(state, "imported")
             atomic_json(folder / STATE_NAME, state)
         return {"meeting": self.row(folder)}

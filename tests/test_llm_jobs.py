@@ -4,7 +4,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from src.desktop.jobs import JobRejected, build_clean_job, file_sha256, stale_reasons, validated_outbox_file
+from src.desktop.jobs import JobRejected, build_clean_job, file_sha256, merged_segment_text, stale_reasons, validated_outbox_file
+from src.desktop.segments import core_transcript, load_timeline, plan_segments, render_segment
 
 
 class CleanJobContractTests(unittest.TestCase):
@@ -76,6 +77,80 @@ class CleanJobContractTests(unittest.TestCase):
             "output": {"path": str(expected), "sha256": file_sha256(expected)},
         }, self.outbox)
         self.assertEqual(accepted, expected.resolve())
+
+    def test_sixty_eight_minutes_cover_every_cue_once(self):
+        cues = load_timeline(self._write_srt(68 * 60 * 1000))
+        segments = plan_segments(cues)
+        self.assertEqual(len(segments), 7)
+        self.assertEqual([segment["core_end"] - segment["core_start"] for segment in segments[:6]], [10 * 60 * 1000] * 6)
+        self.assertEqual(segments[-1]["core_end"] - segments[-1]["core_start"], 8 * 60 * 1000)
+        cores = [cue["id"] for segment in segments for cue in segment["core"]]
+        self.assertEqual(cores, [cue["id"] for cue in cues])
+        self.assertEqual(core_transcript(segments), "\n".join(cue["text"] for cue in cues))
+        self.assertNotIn("[前段上下文", render_segment(segments[0]))
+        second = render_segment(segments[1])
+        boundary = segments[0]["core"][-1]["text"]
+        self.assertIn("[前段上下文", second)
+        self.assertIn(boundary, second)
+        self.assertNotIn(boundary, _core_only(second))
+
+    def test_long_cue_stays_whole_and_context_is_not_merged(self):
+        cues = load_timeline(self._write_srt_blocks([
+            (0, 15 * 60 * 1000, "很長的一段"),
+            (15 * 60 * 1000, 16 * 60 * 1000, "下一段"),
+        ]))
+        segments = plan_segments(cues)
+        self.assertEqual([[cue["text"] for cue in segment["core"]] for segment in segments], [["很長的一段"], ["下一段"]])
+        self.assertEqual(core_transcript(segments), "很長的一段\n下一段")
+        rendered = render_segment(segments[1])
+        self.assertIn("很長的一段", rendered)
+        self.assertIn("下一段", _core_only(rendered))
+        self.assertNotIn("很長的一段", _core_only(rendered))
+
+    def test_segment_result_rejects_context_markers(self):
+        cues = load_timeline(self._write_srt(60 * 1000))
+        segment = plan_segments(cues)[0]
+        out = self.outbox / "seg-01.txt"
+        out.write_text(render_segment(segment), encoding="utf-8")
+        job = {"job_id": "clean-test", "segments": {"items": [{
+            "id": "seg-01", "output_order": 1, "outbox_path": str(out),
+        }]}}
+        result = {"schema_version": 1, "job_id": "clean-test", "stage": "clean", "status": "done", "segments": [{
+            "id": "seg-01", "output_order": 1, "path": str(out), "sha256": file_sha256(out),
+        }]}
+        with self.assertRaisesRegex(JobRejected, "上下文"):
+            merged_segment_text(job, result)
+
+    def _write_srt(self, duration_ms: int, cue_ms: int = 30_000) -> Path:
+        start = 0
+        blocks = []
+        number = 1
+        while start < duration_ms:
+            end = min(start + cue_ms, duration_ms)
+            blocks.append((start, end, f"詞{number}"))
+            start = end
+            number += 1
+        return self._write_srt_blocks(blocks)
+
+    def _write_srt_blocks(self, blocks: list[tuple[int, int, str]]) -> Path:
+        lines = []
+        for number, (start, end, text) in enumerate(blocks, start=1):
+            lines.append(f"{number}\n{_clock(start)} --> {_clock(end)}\n{text}")
+        path = self.meeting / f"timeline-{len(list(self.meeting.glob('timeline-*.srt')))}.srt"
+        path.write_text("\n\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+
+def _clock(value: int) -> str:
+    hours, remainder = divmod(value, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, millis = divmod(remainder, 1_000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
+
+
+def _core_only(rendered: str) -> str:
+    core = rendered.split("[核心｜必須清洗並輸出]\n", 1)[1]
+    return core.split("\n\n[後段上下文", 1)[0]
 
 
 if __name__ == "__main__":

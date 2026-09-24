@@ -115,7 +115,7 @@ class DesktopTests(unittest.TestCase):
         job = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
         self.assertEqual(packet["text"], str(Path(packet["path"])))
         self.assertEqual(job["stage"], "clean")
-        self.assertIsNone(job["segments"])
+        self.assertEqual([item["id"] for item in job["segments"]["items"]], ["seg-01"])
         self.assertNotIn("private vocabulary", Path(packet["path"]).read_text(encoding="utf-8"))
         self.assertIn("private vocabulary", Path(job["profile"]["path"]).read_text(encoding="utf-8"))
         self.assertTrue(Path(packet["path"]).is_file())
@@ -281,7 +281,8 @@ class DesktopTests(unittest.TestCase):
         self.assertFalse((folder / "manual_revisions").exists())
 
     def test_bad_srt_remains_readable_but_cannot_be_edited(self):
-        folder = self.prepared()  # Fake SRT intentionally contains just "1".
+        folder = self.prepared()
+        self.service.paths(folder)["srt"].write_text("1", encoding="utf-8")
         preview = self.service.preview(str(folder), "srt")
         self.assertFalse(preview["editable"])
         self.assertTrue(preview["text"])
@@ -369,16 +370,26 @@ class DesktopTests(unittest.TestCase):
 
     def write_outbox(self, packet, text, **overrides):
         job = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
-        out = Path(overrides.get("output_path", job["expected_output"]["outbox_path"]))
-        out.parent.mkdir(parents=True, exist_ok=True)
-        out.write_text(text, encoding="utf-8")
-        result = {
-            "schema_version": 1,
-            "job_id": overrides.get("job_id", job["job_id"]),
-            "stage": overrides.get("stage", "clean"),
-            "status": overrides.get("status", "done"),
-            "output": {"path": str(out.resolve()), "sha256": overrides.get("sha256", digest(out))},
-        }
+        items = (job.get("segments") or {}).get("items")
+        if items:
+            texts = overrides.get("segment_texts", [text])
+            returned = []
+            for item, body in zip(items, texts):
+                out = Path(overrides.get("output_path", item["outbox_path"]))
+                out.parent.mkdir(parents=True, exist_ok=True)
+                out.write_text(body, encoding="utf-8")
+                returned.append({
+                    "id": item["id"], "output_order": item["output_order"],
+                    "path": str(out.resolve()), "sha256": overrides.get("sha256", digest(out)),
+                })
+            result = {"segments": returned}
+        else:
+            out = Path(overrides.get("output_path", job["expected_output"]["outbox_path"]))
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(text, encoding="utf-8")
+            result = {"output": {"path": str(out.resolve()), "sha256": overrides.get("sha256", digest(out))}}
+        result.update(schema_version=1, job_id=overrides.get("job_id", job["job_id"]),
+                      stage=overrides.get("stage", "clean"), status=overrides.get("status", "done"))
         if "message" in overrides:
             result["message"] = overrides["message"]
         Path(job["expected_output"]["result_path"]).write_text(json.dumps(result), encoding="utf-8")
@@ -420,9 +431,10 @@ class DesktopTests(unittest.TestCase):
         job = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
         raw = self.service.paths(folder)["raw"]
         before = raw.read_bytes()
+        item = job["segments"]["items"][0]
         result = {
             "schema_version": 1, "job_id": job["job_id"], "stage": "clean", "status": "done",
-            "output": {"path": str(raw), "sha256": digest(raw)},
+            "segments": [{"id": item["id"], "output_order": item["output_order"], "path": str(raw), "sha256": digest(raw)}],
         }
         Path(job["expected_output"]["result_path"]).write_text(json.dumps(result), encoding="utf-8")
         with self.assertRaisesRegex(ValueError, "outbox"):
@@ -449,9 +461,64 @@ class DesktopTests(unittest.TestCase):
         first = self.service.handoff(str(folder), "test")
         second = self.service.handoff(str(folder), "test")
         self.assertFalse(Path(first["path"]).exists())
+        self.assertFalse((self.root / ".llm_jobs" / "inbox" / Path(first["path"]).stem).exists())
+        self.assertTrue((self.root / ".llm_jobs" / "archive" / Path(first["path"]).stem / "segments.json").is_file())
         archived = json.loads((self.root / ".llm_jobs" / "archive" / Path(first["path"]).name).read_text(encoding="utf-8"))
         self.assertEqual(archived["status"], "stale")
         self.assertEqual(read_json(folder / "desktop_state.json")["handoffs"]["clean"]["job_id"], second["job_id"])
+
+    def test_unparsed_timeline_does_not_create_a_job(self):
+        folder = self.prepared()
+        self.service.paths(folder)["srt"].write_text("1", encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "時間軸"):
+            self.service.handoff(str(folder), "test")
+        self.assertEqual(list((self.root / ".llm_jobs" / "inbox").glob("*.json")), [])
+
+    def test_long_timeline_merges_cores_without_context_markers(self):
+        folder = self.prepared()
+        raw = self.service.paths(folder)["raw"].read_bytes()
+        srt = self.service.paths(folder)["srt"]
+        srt.write_text(_timeline(68 * 60 * 1000), encoding="utf-8")
+        packet = self.service.handoff(str(folder), "test")
+        job = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
+        items = job["segments"]["items"]
+        self.assertEqual(len(items), 7)
+        self.assertIn("[前段上下文", Path(items[1]["path"]).read_text(encoding="utf-8"))
+        bodies = [f"核心{item['output_order']} 保留問答與專有名詞 Athena。" for item in items]
+        returned = []
+        for item, body in zip(items, bodies):
+            out = Path(item["outbox_path"])
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(body, encoding="utf-8")
+            returned.append({"id": item["id"], "output_order": item["output_order"], "path": str(out), "sha256": digest(out)})
+        Path(job["expected_output"]["result_path"]).write_text(json.dumps({
+            "schema_version": 1, "job_id": job["job_id"], "stage": "clean", "status": "done", "segments": returned,
+        }), encoding="utf-8")
+        self.service.import_job(str(folder))
+        cleaned = self.service.paths(folder)["cleaned"].read_text(encoding="utf-8")
+        self.assertEqual(cleaned, "\n\n".join(bodies) + "\n")
+        self.assertNotIn("前段上下文", cleaned)
+        self.assertEqual(self.service.paths(folder)["raw"].read_bytes(), raw)
+        self.assertEqual(srt.read_bytes(), _timeline(68 * 60 * 1000).encode("utf-8"))
+
+
+def _timeline(duration_ms: int, cue_ms: int = 30_000) -> str:
+    blocks = []
+    start = 0
+    number = 1
+    while start < duration_ms:
+        end = min(start + cue_ms, duration_ms)
+        blocks.append(f"{number}\n{_clock(start)} --> {_clock(end)}\n詞{number}")
+        start = end
+        number += 1
+    return "\n\n".join(blocks) + "\n"
+
+
+def _clock(value: int) -> str:
+    hours, remainder = divmod(value, 3_600_000)
+    minutes, remainder = divmod(remainder, 60_000)
+    seconds, millis = divmod(remainder, 1_000)
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{millis:03d}"
 
 
 if __name__ == "__main__":
