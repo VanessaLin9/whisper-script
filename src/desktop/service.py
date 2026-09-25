@@ -24,6 +24,7 @@ from src.desktop.jobs import (
     JobRejected,
     build_clean_job,
     build_notes_job,
+    contract_digest,
     created_timestamp,
     ensure_job_shape,
     file_sha256,
@@ -398,6 +399,7 @@ class DesktopService:
                 atomic_json(job_path, document)
                 state.setdefault("handoffs", {})["notes"] = {
                     "job_id": job_id, "status": "queued", "job_path": str(job_path),
+                    "contract_sha256": contract_digest(document),
                 }
                 atomic_json(folder / STATE_NAME, state)
                 return {"text": str(job_path), "path": str(job_path), "files": [
@@ -424,6 +426,7 @@ class DesktopService:
                                 "profile": profile, "prompt_hash": state["prompt_hash"], "packet": str(job_path)}
             state.setdefault("handoffs", {})["clean"] = {
                 "job_id": job_id, "status": "queued", "job_path": str(job_path),
+                "contract_sha256": contract_digest(document),
             }
             atomic_json(folder / STATE_NAME, state)
             files = [str(job_path), str(body), segments["manifest_path"]]
@@ -603,6 +606,9 @@ class DesktopService:
                 raise ValueError("清洗工作與這場會議不符。")
             if job.get("status") in {"failed", "imported"}:
                 raise ValueError("這個清洗工作已結束，請重新建立。")
+            # 除了 status，輸入路徑與 hash 必須仍是 Desk 建立時的那一份（PR #13）。
+            if record.get("contract_sha256") != contract_digest(job):
+                raise ValueError("清洗工作內容已被改寫，請重新建立。")
             profile = job.get("profile") if isinstance(job.get("profile"), dict) else {}
             profile_path = profile.get("path") if isinstance(profile.get("path"), str) else ""
             note = Path(profile_path)
@@ -666,6 +672,8 @@ class DesktopService:
                 raise ValueError("會議記錄工作與這場會議不符。")
             if job.get("status") in {"failed", "imported"} or record.get("status") in {"failed", "imported"}:
                 raise ValueError("這個會議記錄工作已結束，請重新建立。")
+            if record.get("contract_sha256") != contract_digest(job):
+                raise ValueError("會議記錄工作內容已被改寫，請重新建立。")
             cleaned = paths["cleaned"]
             specification = self.repo / "docs" / "meeting-summary-spec.md"
             profile = job.get("profile") if isinstance(job.get("profile"), dict) else {}

@@ -128,6 +128,17 @@ def build_clean_job(
     return document
 
 
+def contract_digest(job: dict) -> str:
+    """Hash every field except status.
+
+    The agent may mark a job running or failed. Any other edit is a different
+    contract, so import compares this digest with the copy Desk stored.
+    """
+    canonical = {key: value for key, value in job.items() if key != "status"}
+    payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def stale_reasons(
     job: dict,
     *,

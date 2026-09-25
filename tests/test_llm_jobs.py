@@ -8,6 +8,7 @@ from src.desktop.jobs import (
     JobRejected,
     build_clean_job,
     build_notes_job,
+    contract_digest,
     ensure_job_shape,
     file_sha256,
     merged_segment_text,
@@ -56,6 +57,14 @@ class CleanJobContractTests(unittest.TestCase):
         self.assertIsNone(document["inputs"]["vocab"])
         self.assertIsNone(document["segments"])
         self.assertTrue(document["expected_output"]["meeting_path"].endswith("demo_transcription_cleaned.txt"))
+
+    def test_contract_digest_ignores_status_only(self):
+        document = self.job()
+        original = contract_digest(document)
+        document["status"] = "running"
+        self.assertEqual(contract_digest(document), original)
+        document["inputs"]["transcript"]["path"] = str(self.root / "other.txt")
+        self.assertNotEqual(contract_digest(document), original)
 
     def test_stale_when_profile_or_transcript_changes(self):
         document = self.job()

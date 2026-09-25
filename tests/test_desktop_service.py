@@ -505,6 +505,54 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(archived.read_text(encoding="utf-8"), "null")
         self.assertEqual(read_json(folder / "desktop_state.json")["handoffs"]["clean"]["job_id"], second["job_id"])
 
+    def test_running_status_still_imports(self):
+        folder = self.prepared()
+        packet = self.service.handoff(str(folder), "test")
+        job_path = Path(packet["path"])
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+        job["status"] = "running"
+        job_path.write_text(json.dumps(job), encoding="utf-8")
+        self.write_outbox(packet, self.service.paths(folder)["prepared"].read_text(encoding="utf-8") + "。")
+        imported = self.service.import_job(str(folder))
+        self.assertTrue(imported["meeting"]["cleaned"])
+
+    def test_tampered_segment_input_is_rejected(self):
+        folder = self.prepared()
+        packet = self.service.handoff(str(folder), "test")
+        body = self.service.paths(folder)["prepared"].read_text(encoding="utf-8") + "。"
+        self.write_outbox(packet, body)
+        job_path = Path(packet["path"])
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+        other = self.root / "other-segment.txt"
+        other.write_text("別的分段輸入\n", encoding="utf-8")
+        job["segments"]["items"][0]["path"] = str(other)
+        job["segments"]["items"][0]["sha256"] = digest(other)
+        job_path.write_text(json.dumps(job), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "已被改寫"):
+            self.service.import_job(str(folder))
+        self.assertFalse(self.service.paths(folder)["cleaned"].exists())
+        self.assertEqual(other.read_text(encoding="utf-8"), "別的分段輸入\n")
+
+    def test_tampered_profile_and_transcript_metadata_is_rejected(self):
+        folder = self.prepared()
+        packet = self.service.handoff(str(folder), "test")
+        self.write_outbox(packet, self.service.paths(folder)["prepared"].read_text(encoding="utf-8") + "。")
+        job_path = Path(packet["path"])
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+        other_profile = self.notes / "other.md"
+        other_profile.write_text("其他提示詞\n", encoding="utf-8")
+        other_transcript = self.root / "other-transcript.txt"
+        other_transcript.write_text("別的逐字稿\n", encoding="utf-8")
+        live = self.service.paths(folder)["prepared"]
+        job["profile"]["path"] = str(other_profile)
+        job["profile"]["sha256"] = digest(other_profile)
+        job["inputs"]["transcript"]["path"] = str(other_transcript)
+        job["inputs"]["transcript"]["sha256"] = digest(live)
+        job_path.write_text(json.dumps(job), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "已被改寫"):
+            self.service.import_job(str(folder))
+        self.assertFalse(self.service.paths(folder)["cleaned"].exists())
+
     def test_notes_job_imports_draft_without_changing_cleaned(self):
         folder = self.prepared()
         body = self.service.paths(folder)["prepared"].read_text(encoding="utf-8")
