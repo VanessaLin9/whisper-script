@@ -55,7 +55,7 @@ if [ "$want_txt" = "1" ]; then
     echo "transcript for ${base_name}" >"${output_base}.txt"
 fi
 if [ "$want_srt" = "1" ]; then
-    echo "1" >"${output_base}.srt"
+    printf '1\n00:00:00,000 --> 00:00:02,000\ntranscript line\n' >"${output_base}.srt"
 fi
 if [ "$want_vtt" = "1" ]; then
     echo "WEBVTT" >"${output_base}.vtt"
