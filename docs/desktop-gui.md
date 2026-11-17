@@ -6,6 +6,8 @@
 
 原生 App 可拖曳匯入或選取單一音檔、確認錄音時間、瀏覽既有會議、轉錄、預清洗、取消／續跑、建立清洗 job、從 outbox 匯入清洗稿、預覽與內容確認、準備會議記錄交接。預設多語言 medium、zh。ASR 不保證字體為繁體；繁體校正與專有名詞保真交由後續 LLM 清洗。清洗 job 只含路徑與 hash，放在會議資料根目錄的 `.llm_jobs/inbox`。Desk 依有效 SRT 在 cue 邊界切成約 10 分鐘核心、前後各 45 秒上下文；沒有可解析的 SRT 就停止。Agent 只回各段核心到 `.llm_jobs/outbox`，Desk 再合併。會議記錄是另一個 job，只能在清洗稿已確認後建立，匯入 coverage map 與草稿，不回寫清洗稿，也不發布 Notion。Agent 不寫 `desktop_state.json`。
 
+內容確認成功後，Desk 會自動在 `.llm_jobs/inbox` 建立 notes job；同一份有效清洗稿（SHA-256 相同）已有 queued、running 或 done job 時會重用，不會重複建立。清洗稿 hash 改變時，沿用既有 stale 與替換規則。若建立失敗，內容確認仍保留成功，但 Desk 會明確顯示錯誤，不會靜默略過。notes job 一律引用 Desk 目前生效的清洗稿，包含 `manual_revisions/` 下的人工訂正版。
+
 內建錄音、批次佇列、Drive GUI、LLM API、Notion 發布尚未實作。使用者可繼續使用語音備忘錄；現有 shell 入口仍保留。
 
 ## 人工訂正與會議名稱

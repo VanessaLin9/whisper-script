@@ -288,8 +288,14 @@ final class Desk: ObservableObject {
     }
     func approve() {
         guard let selected = selected else { return }
-        call(["action": "review", "folder": selected]) { _ in
-            self.notice = "清洗稿已確認，可以準備會議記錄交接。"
+        call(["action": "review", "folder": selected]) { value in
+            let jobError = value["notes_job_error"] as? String ?? ""
+            if jobError.isEmpty {
+                self.notice = "清洗稿已確認，會議記錄工作已自動建立。"
+            } else {
+                self.error = jobError
+                self.notice = "清洗稿已確認，但會議記錄工作未建立。"
+            }
             self.refresh()
         }
     }
