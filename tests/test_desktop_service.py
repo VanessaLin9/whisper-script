@@ -37,6 +37,7 @@ class DesktopTests(unittest.TestCase):
         self.notes = self.home / "notes"
         self.notes.mkdir()
         (self.notes / "test.md").write_text("---\nkey: test\ntitle: 測試提示詞\n---\nprivate vocabulary", encoding="utf-8")
+        (self.notes / "whisper.md").write_text("---\nkey: whisper\ntitle: whisper 提示詞\n---\nwhisper vocabulary", encoding="utf-8")
         self.profiles = patch.dict(os.environ, {"PROMPT_NOTES_DIR": str(self.notes)})
         self.profiles.start()
         self.addCleanup(self.profiles.stop)
@@ -175,6 +176,49 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(second["notes_job"]["job_id"], first)
         self.assertTrue(second["notes_job"]["deduplicated"])
         self.assertEqual(len(list((self.root / ".llm_jobs" / "inbox").glob("notes-*.json"))), 1)
+
+    def _reviewed_folder_with_notes_job(self):
+        folder = self.prepared()
+        self.service.handoff(str(folder), "test")
+        cleaned = self.home / "clean.txt"
+        cleaned.write_text(self.service.paths(folder)["prepared"].read_text(encoding="utf-8"), encoding="utf-8")
+        self.service.import_cleaned(str(folder), str(cleaned))
+        result = self.service.review(str(folder))
+        return folder, result["notes_job"]
+
+    def test_summary_rebuilds_notes_job_for_different_profile_and_stales_old(self):
+        folder, first = self._reviewed_folder_with_notes_job()
+        second = self.service.handoff(str(folder), "whisper", summary=True)
+
+        self.assertFalse(second["deduplicated"])
+        self.assertNotEqual(first["job_id"], second["job_id"])
+        old = self.root / ".llm_jobs" / "archive" / Path(first["path"]).name
+        self.assertTrue(old.is_file())
+        self.assertEqual(read_json(old)["status"], "stale")
+        new_job = read_json(Path(second["path"]))
+        state = read_json(folder / "desktop_state.json")
+        self.assertEqual(state["profile"], new_job["profile"]["key"])
+        self.assertEqual(state["prompt_hash"], new_job["profile"]["sha256"])
+
+    def test_summary_reuses_notes_job_when_profile_matches(self):
+        folder, first = self._reviewed_folder_with_notes_job()
+        second = self.service.handoff(str(folder), "test", summary=True)
+
+        self.assertTrue(second["deduplicated"])
+        self.assertEqual(first["job_id"], second["job_id"])
+        self.assertEqual(read_json(folder / "desktop_state.json")["profile"], "test")
+
+    def test_summary_rejects_different_profile_when_notes_job_running(self):
+        folder, first = self._reviewed_folder_with_notes_job()
+        job_path = Path(first["path"])
+        job = read_json(job_path)
+        job["status"] = "running"
+        job_path.write_text(json.dumps(job), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "不同提示詞.*正在執行"):
+            self.service.handoff(str(folder), "whisper", summary=True)
+        self.assertEqual(read_json(job_path)["status"], "running")
+        self.assertEqual(read_json(folder / "desktop_state.json")["profile"], "test")
 
     def test_review_succeeds_but_reports_notes_job_failure(self):
         folder = self.prepared()

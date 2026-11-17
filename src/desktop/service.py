@@ -425,16 +425,6 @@ class DesktopService:
         if not cleaned.is_file():
             raise ValueError("找不到目前生效的清洗稿。")
         cleaned_hash = file_sha256(cleaned)
-        existing = self._find_notes_job(folder, cleaned_hash)
-        if existing:
-            job, job_path = existing
-            state.setdefault("handoffs", {})["notes"] = {
-                "job_id": job["job_id"], "status": job.get("status", "queued"),
-                "job_path": str(job_path), "contract_sha256": contract_digest(job),
-            }
-            return {"text": str(job_path), "path": str(job_path), "files": [str(job_path), str(cleaned)],
-                    "job_id": job["job_id"], "deduplicated": True}
-
         profile_key = profile_key or state.get("profile")
         clean = self._clean_record(state)
         if clean and clean.get("job_path"):
@@ -456,10 +446,29 @@ class DesktopService:
         note = profile_path or Path(selected.get("local_path", ""))
         if not note.is_file():
             raise ValueError("此提示詞尚未同步到本機，無法建立會議記錄工作。")
+        profile_sha256 = file_sha256(note)
+
+        candidates = self._find_notes_jobs(folder, cleaned_hash)
+        for job, job_path in candidates:
+            job_profile = job.get("profile") if isinstance(job.get("profile"), dict) else {}
+            same_profile = (job_profile.get("key") == profile_key
+                            and job_profile.get("sha256") == profile_sha256)
+            if same_profile:
+                state.setdefault("handoffs", {})["notes"] = {
+                    "job_id": job["job_id"], "status": job.get("status", "queued"),
+                    "job_path": str(job_path), "contract_sha256": contract_digest(job),
+                }
+                return {"text": str(job_path), "path": str(job_path), "files": [str(job_path), str(cleaned)],
+                        "job_id": job["job_id"], "deduplicated": True}
+            if job.get("status") == "running":
+                raise ValueError("目前清洗稿已有不同提示詞的會議記錄工作正在執行，請等待完成後再切換提示詞。")
+            if job.get("status") == "queued":
+                self._archive_notes_candidate(state, job_path, "stale")
+
         specification = self.repo / "docs" / "meeting-summary-spec.md"
         if not specification.is_file():
             raise ValueError("找不到會議記錄規格。")
-        state.update(profile=profile_key, prompt_hash=digest(note))
+        state.update(profile=profile_key, prompt_hash=profile_sha256)
         self._retire_previous_notes_job(state)
         inbox, outbox = self._job_dirs()
         job_id = new_notes_job_id()
@@ -479,8 +488,8 @@ class DesktopService:
             str(job_path), str(cleaned), str(specification),
         ], "job_id": job_id, "deduplicated": False}
 
-    def _find_notes_job(self, folder: Path, cleaned_hash: str) -> tuple[dict, Path] | None:
-        """找出同一會議、同一清洗稿 hash 且仍可處理的 notes job。"""
+    def _find_notes_jobs(self, folder: Path, cleaned_hash: str) -> list[tuple[dict, Path]]:
+        """找出同一會議、同一清洗稿 hash 且仍可處理的 notes jobs。"""
         root = self.root / ".llm_jobs"
         candidates = []
         record = self._stage_record(read_json(folder / STATE_NAME), "notes")
@@ -489,6 +498,7 @@ class DesktopService:
         candidates.extend(sorted((root / "inbox").glob("notes-*.json")))
         candidates.extend(sorted((root / "archive").glob("notes-*.json")))
         seen = set()
+        matches = []
         for path in candidates:
             if path in seen or not path.is_file():
                 continue
@@ -503,8 +513,30 @@ class DesktopService:
                 continue
             recorded = (job.get("inputs", {}).get("cleaned") or {}).get("sha256")
             if recorded == cleaned_hash:
-                return job, path
-        return None
+                matches.append((job, path))
+        return matches
+
+    def _archive_notes_candidate(self, state: dict, path: Path, status: str) -> None:
+        """將 profile 不同的 queued notes job 以 stale 狀態封存。"""
+        record = self._stage_record(state, "notes")
+        if record and Path(record.get("job_path", "")).resolve() == path.resolve():
+            self._archive_job(state, status, "notes")
+            return
+        if not path.is_file():
+            return
+        try:
+            job = read_json(path)
+        except (OSError, json.JSONDecodeError):
+            job = None
+        archive = self.root / ".llm_jobs" / "archive"
+        archive.mkdir(parents=True, exist_ok=True)
+        destination = archive / path.name
+        if job is not None:
+            job["status"] = status
+            atomic_json(destination, job)
+            path.unlink(missing_ok=True)
+        else:
+            shutil.move(path, destination)
 
     def _job_dirs(self) -> tuple[Path, Path]:
         root = self.root / ".llm_jobs"

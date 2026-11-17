@@ -7,8 +7,10 @@ The job file does not contain the transcript or the prompt body.
 Reviewing a valid cleaned transcript automatically creates a notes job. The
 notes job uses the effective cleaned path (including manual_revisions), and
 the profile recorded by the clean job or desktop state. A notes job for the
-same meeting and cleaned sha256 is reused while its status is queued, running,
-or done; a changed cleaned hash follows the existing stale-and-replace rule.
+same meeting, cleaned sha256, profile key, and profile sha256 is reused while
+its status is queued, running, or done; a changed cleaned hash or profile
+follows the existing stale-and-replace rule. A different profile never
+replaces a running job silently.
 Review itself remains successful if notes-job creation fails; Desk persists and
 returns an explicit error for the user to resolve.
 
