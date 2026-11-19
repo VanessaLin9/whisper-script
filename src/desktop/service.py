@@ -382,29 +382,9 @@ class DesktopService:
             if summary:
                 if not self.row(folder)["reviewed"]:
                     raise ValueError("請先匯入清洗稿並完成內容檢查。")
-                specification = self.repo / "docs" / "meeting-summary-spec.md"
-                if not specification.is_file():
-                    raise ValueError("找不到會議記錄規格。")
-                self._retire_previous_notes_job(state)
-                inbox, outbox = self._job_dirs()
-                job_id = new_notes_job_id()
-                document = build_notes_job(
-                    job_id=job_id, meeting_dir=folder, meeting_title=self.row(folder)["title"],
-                    profile_key=profile, profile_path=note, cleaned_path=paths["cleaned"],
-                    specification_path=specification, outbox_dir=outbox,
-                    created_at=created_timestamp(datetime.now(TZ)),
-                    vocab_path=folder / "meeting_vocab.md",
-                )
-                job_path = inbox / f"{job_id}.json"
-                atomic_json(job_path, document)
-                state.setdefault("handoffs", {})["notes"] = {
-                    "job_id": job_id, "status": "queued", "job_path": str(job_path),
-                    "contract_sha256": contract_digest(document),
-                }
+                result = self._create_notes_job(folder, state, paths, profile, note)
                 atomic_json(folder / STATE_NAME, state)
-                return {"text": str(job_path), "path": str(job_path), "files": [
-                    str(job_path), str(paths["cleaned"]), str(specification),
-                ], "job_id": job_id, "meeting": self.row(folder)}
+                return {**result, "meeting": self.row(folder)}
             inbox, outbox = self._job_dirs()
             job_id = new_clean_job_id()
             try:
@@ -437,6 +417,126 @@ class DesktopService:
                 files.append(vocab["path"])
             return {"text": str(job_path), "path": str(job_path), "files": files,
                     "job_id": job_id, "meeting": self.row(folder)}
+
+    def _create_notes_job(self, folder: Path, state: dict, paths: dict[str, Path],
+                          profile_key: str | None = None, profile_path: Path | None = None) -> dict:
+        """建立或重用目前有效清洗稿的 notes job；呼叫者負責持久化 state。"""
+        cleaned = paths["cleaned"]
+        if not cleaned.is_file():
+            raise ValueError("找不到目前生效的清洗稿。")
+        cleaned_hash = file_sha256(cleaned)
+        profile_key = profile_key or state.get("profile")
+        clean = self._clean_record(state)
+        if clean and clean.get("job_path"):
+            try:
+                clean_job = read_json(Path(clean["job_path"]))
+            except (OSError, json.JSONDecodeError):
+                clean_job = {}
+            profile = clean_job.get("profile") if isinstance(clean_job, dict) else None
+            if isinstance(profile, dict):
+                profile_key = profile_key or profile.get("key")
+                if not profile_path and isinstance(profile.get("path"), str):
+                    profile_path = Path(profile["path"])
+        if not profile_key:
+            raise ValueError("找不到建立會議記錄工作所需的提示詞 profile；請先建立清洗工作。")
+        profiles = load_prompt_profiles()
+        selected = profiles.get(profile_key)
+        if not isinstance(selected, dict):
+            raise ValueError("找不到建立會議記錄工作所需的提示詞 profile；請重新選擇提示詞。")
+        note = profile_path or Path(selected.get("local_path", ""))
+        if not note.is_file():
+            raise ValueError("此提示詞尚未同步到本機，無法建立會議記錄工作。")
+        profile_sha256 = file_sha256(note)
+
+        candidates = self._find_notes_jobs(folder, cleaned_hash)
+        for job, job_path in candidates:
+            job_profile = job.get("profile") if isinstance(job.get("profile"), dict) else {}
+            same_profile = (job_profile.get("key") == profile_key
+                            and job_profile.get("sha256") == profile_sha256)
+            if same_profile:
+                state.setdefault("handoffs", {})["notes"] = {
+                    "job_id": job["job_id"], "status": job.get("status", "queued"),
+                    "job_path": str(job_path), "contract_sha256": contract_digest(job),
+                }
+                return {"text": str(job_path), "path": str(job_path), "files": [str(job_path), str(cleaned)],
+                        "job_id": job["job_id"], "deduplicated": True}
+            if job.get("status") == "running":
+                raise ValueError("目前清洗稿已有不同提示詞的會議記錄工作正在執行，請等待完成後再切換提示詞。")
+            if job.get("status") == "queued":
+                self._archive_notes_candidate(state, job_path, "stale")
+
+        specification = self.repo / "docs" / "meeting-summary-spec.md"
+        if not specification.is_file():
+            raise ValueError("找不到會議記錄規格。")
+        state.update(profile=profile_key, prompt_hash=profile_sha256)
+        self._retire_previous_notes_job(state)
+        inbox, outbox = self._job_dirs()
+        job_id = new_notes_job_id()
+        document = build_notes_job(
+            job_id=job_id, meeting_dir=folder, meeting_title=self.row(folder)["title"],
+            profile_key=profile_key, profile_path=note, cleaned_path=cleaned,
+            specification_path=specification, outbox_dir=outbox,
+            created_at=created_timestamp(datetime.now(TZ)), vocab_path=folder / "meeting_vocab.md",
+        )
+        job_path = inbox / f"{job_id}.json"
+        atomic_json(job_path, document)
+        state.setdefault("handoffs", {})["notes"] = {
+            "job_id": job_id, "status": "queued", "job_path": str(job_path),
+            "contract_sha256": contract_digest(document),
+        }
+        return {"text": str(job_path), "path": str(job_path), "files": [
+            str(job_path), str(cleaned), str(specification),
+        ], "job_id": job_id, "deduplicated": False}
+
+    def _find_notes_jobs(self, folder: Path, cleaned_hash: str) -> list[tuple[dict, Path]]:
+        """找出同一會議、同一清洗稿 hash 且仍可處理的 notes jobs。"""
+        root = self.root / ".llm_jobs"
+        candidates = []
+        record = self._stage_record(read_json(folder / STATE_NAME), "notes")
+        if record and record.get("job_path"):
+            candidates.append(Path(record["job_path"]))
+        candidates.extend(sorted((root / "inbox").glob("notes-*.json")))
+        candidates.extend(sorted((root / "archive").glob("notes-*.json")))
+        seen = set()
+        matches = []
+        for path in candidates:
+            if path in seen or not path.is_file():
+                continue
+            seen.add(path)
+            try:
+                job = read_json(path)
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(job, dict) or job.get("stage") != "notes":
+                continue
+            if job.get("meeting_dir") != str(folder.resolve()) or job.get("status") not in {"queued", "running", "done"}:
+                continue
+            recorded = (job.get("inputs", {}).get("cleaned") or {}).get("sha256")
+            if recorded == cleaned_hash:
+                matches.append((job, path))
+        return matches
+
+    def _archive_notes_candidate(self, state: dict, path: Path, status: str) -> None:
+        """將 profile 不同的 queued notes job 以 stale 狀態封存。"""
+        record = self._stage_record(state, "notes")
+        if record and Path(record.get("job_path", "")).resolve() == path.resolve():
+            self._archive_job(state, status, "notes")
+            return
+        if not path.is_file():
+            return
+        try:
+            job = read_json(path)
+        except (OSError, json.JSONDecodeError):
+            job = None
+        archive = self.root / ".llm_jobs" / "archive"
+        archive.mkdir(parents=True, exist_ok=True)
+        destination = archive / path.name
+        if job is not None:
+            job["status"] = status
+            atomic_json(destination, job)
+            path.unlink(missing_ok=True)
+        else:
+            shutil.move(path, destination)
 
     def _job_dirs(self) -> tuple[Path, Path]:
         root = self.root / ".llm_jobs"
@@ -757,8 +857,18 @@ class DesktopService:
                 raise ValueError("清洗稿沒有有效的匯入檢查，或檔案已變更。請重新確認來源。")
             quality.update(status="passed", reviewed_at=datetime.now(TZ).isoformat(), reviewer="user")
             state["status"] = "reviewed"
+            notes_job_error = ""
+            try:
+                notes_result = self._create_notes_job(folder, state, paths)
+                state["error"] = ""
+            except Exception as exc:
+                # 人工確認是獨立且不可回滾的動作；job 失敗必須明確回傳並留在 Desk。
+                notes_result = {"job_id": "", "path": "", "deduplicated": False}
+                notes_job_error = f"內容已確認，但自動建立會議記錄工作失敗：{exc}"
+                state["error"] = notes_job_error
             atomic_json(folder / STATE_NAME, state)
-        return {"meeting": self.row(folder)}
+        return {"meeting": self.row(folder), "notes_job_error": notes_job_error,
+                "notes_job": notes_result}
 
     def preview(self, value: str, kind: str) -> dict:
         if kind not in {"raw", "prepared", "corrected", "cleaned", "srt"}:

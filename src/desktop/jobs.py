@@ -4,6 +4,16 @@ Meeting Desk writes the inbox JSON and is the only writer of desktop state.
 An external agent reads paths and hashes, then writes the outbox result.
 The job file does not contain the transcript or the prompt body.
 
+Reviewing a valid cleaned transcript automatically creates a notes job. The
+notes job uses the effective cleaned path (including manual_revisions), and
+the profile recorded by the clean job or desktop state. A notes job for the
+same meeting, cleaned sha256, profile key, and profile sha256 is reused while
+its status is queued, running, or done; a changed cleaned hash or profile
+follows the existing stale-and-replace rule. A different profile never
+replaces a running job silently.
+Review itself remains successful if notes-job creation fails; Desk persists and
+returns an explicit error for the user to resolve.
+
 PR #13：job 只含路徑與 hash。desktop_state.json 只由 Desk 在建立與匯入成功時寫。
 stale 由 Desk 比對 hash，不由 agent 宣告。notes 與 clean 的 stage 必須相符，不能互相匯入。
 """
