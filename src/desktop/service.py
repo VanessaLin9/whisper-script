@@ -274,6 +274,164 @@ class DesktopService:
                         warnings.append(f"{folder.name}: {exc}")
         return {"meetings": rows, "warnings": warnings}
 
+    def list_jobs(self, *, stage=None, status=None, folder=None, include_archive=False) -> dict:
+        """以唯讀方式列出 inbox（及選擇性的 archive）工作。
+
+        這裡刻意不呼叫 ``_job_dirs``、``prepare`` 或任何會取得 meeting lock
+        的方法；工作目錄不存在時，直接回傳空清單。
+        """
+        if stage is not None and stage not in {"clean", "notes"}:
+            raise ValueError("stage 必須是 clean 或 notes。")
+        statuses = self._list_job_statuses(status)
+        if folder is not None:
+            if not isinstance(folder, str) or not folder.strip():
+                raise ValueError("folder 必須是非空字串。")
+            folder_path = self.folder(folder)
+            folder_value = str(folder_path)
+        else:
+            folder_value = None
+        if not isinstance(include_archive, bool):
+            raise ValueError("include_archive 必須是布林值。")
+
+        jobs_root = self.root / ".llm_jobs"
+        inbox = jobs_root / "inbox"
+        locations = [(inbox, "inbox")]
+        if include_archive:
+            locations.append((jobs_root / "archive", "archive"))
+        jobs, invalid = [], []
+        for directory, location in locations:
+            # glob/iterdir 都是唯讀；不存在的目錄代表目前沒有工作。
+            if not directory.is_dir():
+                continue
+            for path in sorted(directory.glob("*.json")):
+                try:
+                    job = json.loads(path.read_text(encoding="utf-8"))
+                    self._validate_list_job(job)
+                    if stage is not None and job["stage"] != stage:
+                        continue
+                    if statuses is not None and job["status"] not in statuses:
+                        continue
+                    if folder_value is not None and job["meeting_dir"] != folder_value:
+                        continue
+                    jobs.append(self._job_listing(job, path, location))
+                except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
+                    invalid.append({"job_path": str(path), "error": str(exc)})
+        jobs.sort(key=lambda item: (item["_created_at"], item["job_id"]))
+        for item in jobs:
+            item.pop("_created_at", None)
+        return {"jobs": jobs, "invalid": invalid, "root": str(self.root)}
+
+    @staticmethod
+    def _list_job_statuses(value):
+        allowed = {"queued", "running", "done", "failed", "stale", "imported"}
+        if value is None:
+            return None
+        if isinstance(value, str):
+            values = [value]
+        elif isinstance(value, list) and all(isinstance(item, str) for item in value):
+            values = value
+        else:
+            raise ValueError("status 必須是字串或字串清單。")
+        if not values or any(item not in allowed for item in values):
+            raise ValueError("status 含有不支援的值；可用 queued、running、done、failed、stale、imported。")
+        return set(values)
+
+    @staticmethod
+    def _validate_list_job(job):
+        if not isinstance(job, dict):
+            raise ValueError("工作 JSON 必須是物件。")
+        required = ("job_id", "stage", "status", "created_at", "meeting_dir", "meeting_title",
+                    "profile", "inputs", "expected_output")
+        missing = [key for key in required if key not in job]
+        if missing:
+            raise ValueError("工作缺少欄位：" + "、".join(missing) + "。")
+        if not isinstance(job["job_id"], str) or not job["job_id"]:
+            raise ValueError("job_id 必須是非空字串。")
+        if job["stage"] not in {"clean", "notes"}:
+            raise ValueError("stage 必須是 clean 或 notes。")
+        if not isinstance(job["status"], str):
+            raise ValueError("status 必須是字串。")
+        if job["status"] not in {"queued", "running", "done", "failed", "stale", "imported"}:
+            raise ValueError("status 不是契約支援的值。")
+        if not isinstance(job["created_at"], str):
+            raise ValueError("created_at 必須是 ISO 時間字串。")
+        try:
+            datetime.fromisoformat(job["created_at"])
+        except ValueError as exc:
+            raise ValueError("created_at 不是有效的 ISO 時間字串。") from exc
+        if not isinstance(job["meeting_dir"], str) or not isinstance(job["meeting_title"], str):
+            raise ValueError("meeting_dir 與 meeting_title 必須是字串。")
+        profile = job["profile"]
+        if (not isinstance(profile, dict) or not isinstance(profile.get("key"), str)
+                or not isinstance(profile.get("path"), str) or not isinstance(profile.get("sha256"), str)):
+            raise ValueError("profile 必須含有 key、path 與 sha256。")
+        inputs = job["inputs"]
+        if not isinstance(inputs, dict):
+            raise ValueError("inputs 必須是物件。")
+        input_key = "transcript" if job["stage"] == "clean" else "cleaned"
+        main_input = inputs.get(input_key)
+        if (not isinstance(main_input, dict) or not isinstance(main_input.get("path"), str)
+                or not isinstance(main_input.get("sha256"), str)):
+            raise ValueError(f"inputs.{input_key} 必須含有 path 與 sha256。")
+        expected = job["expected_output"]
+        if not isinstance(expected, dict) or not isinstance(expected.get("result_path"), str):
+            raise ValueError("expected_output 必須含有 result_path。")
+
+    @staticmethod
+    def _list_file_hash(path: Path) -> str:
+        return file_sha256(path) if path.is_file() else ""
+
+    def _job_listing(self, job: dict, path: Path, location: str) -> dict:
+        input_key = "transcript" if job["stage"] == "clean" else "cleaned"
+        main_input = job["inputs"][input_key]
+        updated_at = datetime.fromtimestamp(path.stat().st_mtime, TZ).isoformat()
+        stale = self._list_job_stale(job)
+        result_path = Path(job["expected_output"]["result_path"])
+        created_at = datetime.fromisoformat(job["created_at"])
+        if created_at.tzinfo is None:
+            created_at = created_at.replace(tzinfo=TZ)
+        return {
+            "job_id": job["job_id"], "stage": job["stage"], "status": job["status"],
+            "job_path": str(path), "location": location, "meeting_dir": job["meeting_dir"],
+            "meeting_title": job["meeting_title"],
+            "profile": {"key": job["profile"]["key"], "sha256": job["profile"]["sha256"]},
+            "input": {"path": main_input["path"], "sha256": main_input["sha256"]},
+            "input_path": main_input["path"], "input_sha256": main_input["sha256"],
+            "expected_output": job["expected_output"], "result_ready": result_path.is_file(),
+            "created_at": job["created_at"], "updated_at": updated_at,
+            "stale": bool(stale), "stale_reasons": stale,
+            "_created_at": created_at,
+        }
+
+    def _list_job_stale(self, job: dict) -> list[str]:
+        reasons = ["status"] if job["status"] == "stale" else []
+        folder = Path(job["meeting_dir"]).expanduser().resolve()
+        if not folder.is_dir():
+            return reasons + ["meeting_dir"]
+        try:
+            state = read_json(folder / STATE_NAME)
+            paths = self.effective(folder, state)
+            profile_path = Path(job["profile"].get("path", ""))
+            profile_sha = self._list_file_hash(profile_path)
+            if job["stage"] == "clean":
+                reasons.extend(stale_reasons(
+                    job, transcript_sha256=self._list_file_hash(paths["input"]),
+                    srt_sha256=self._list_file_hash(paths["srt"]),
+                    profile_sha256=profile_sha, profile_path=str(profile_path),
+                ))
+                if not paths["input"].is_file() and "transcript" not in reasons:
+                    reasons.append("transcript")
+            else:
+                current = self._list_file_hash(paths["cleaned"])
+                recorded = job["inputs"]["cleaned"].get("sha256")
+                if current != recorded:
+                    reasons.append("cleaned")
+            if profile_sha != job["profile"].get("sha256") or not profile_path.is_file():
+                reasons.append("profile")
+        except (OSError, ValueError, KeyError, TypeError):
+            reasons.append("meeting_files")
+        return list(dict.fromkeys(reasons))
+
     def inspect_audio(self, value: str) -> dict:
         path = Path(value).expanduser().resolve()
         if not path.is_file() or path.suffix.lower() not in AUDIO_EXTENSIONS:
@@ -894,6 +1052,9 @@ def dispatch(service: DesktopService, request: dict, cancellation=None, progress
     if action == "environment": return service.environment()
     if action == "settings": return service.save_settings(request["settings"])
     if action == "list": return service.meetings()
+    if action == "list_jobs":
+        return service.list_jobs(stage=request.get("stage"), status=request.get("status"),
+                                 folder=request.get("folder"), include_archive=request.get("include_archive", False))
     if action == "inspect": return service.inspect_audio(request["path"])
     if action == "import": return service.import_audio(request["path"], request["title"], request["meeting_time"])
     if action == "process": return service.process(request["folder"], cancellation, progress)

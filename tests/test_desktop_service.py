@@ -823,6 +823,76 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(self.service.paths(folder)["raw"].read_bytes(), raw)
         self.assertEqual(srt.read_bytes(), _timeline(68 * 60 * 1000).encode("utf-8"))
 
+    def test_list_jobs_is_sorted_filtered_and_reports_read_only_state(self):
+        folder = self.prepared()
+        clean = self.service.handoff(str(folder), "test")
+        clean_path = Path(clean["path"])
+        result_path = Path(json.loads(clean_path.read_text(encoding="utf-8"))["expected_output"]["result_path"])
+        result_path.write_text("{}", encoding="utf-8")
+        cleaned = self.home / "clean-for-list.txt"
+        cleaned.write_text(self.service.paths(folder)["prepared"].read_text(encoding="utf-8"), encoding="utf-8")
+        self.service.import_cleaned(str(folder), str(cleaned))
+        notes = self.service.review(str(folder))["notes_job"]
+        notes_folder = folder
+
+        listed = self.service.list_jobs()
+        self.assertEqual([job["stage"] for job in listed["jobs"]], ["clean", "notes"])
+        self.assertEqual(listed["jobs"][0]["location"], "inbox")
+        self.assertTrue(listed["jobs"][0]["result_ready"])
+        self.assertIn("input", listed["jobs"][0])
+        self.assertIn("updated_at", listed["jobs"][0])
+        self.assertFalse(listed["jobs"][0]["stale"])
+        self.assertEqual(self.service.list_jobs(stage="notes")["jobs"][0]["meeting_dir"], str(notes_folder))
+        self.assertEqual(self.service.list_jobs(status="queued")["jobs"][0]["status"], "queued")
+        self.assertEqual(self.service.list_jobs(folder=str(folder))["jobs"][0]["stage"], "clean")
+        self.assertEqual(self.service.list_jobs(stage="clean", status=["queued"], folder=str(folder))["jobs"][0]["job_id"], clean["job_id"])
+
+        archive = self.root / ".llm_jobs" / "archive" / clean_path.name
+        archive.parent.mkdir(exist_ok=True)
+        archive.write_text(clean_path.read_text(encoding="utf-8"), encoding="utf-8")
+        before = {path: digest(path) for path in self.root.rglob("*") if path.is_file()}
+        self.assertEqual(len(self.service.list_jobs()["jobs"]), 2)
+        self.assertEqual(len(self.service.list_jobs(include_archive=True)["jobs"]), 3)
+        self.assertTrue(all(job["location"] == "archive" for job in self.service.list_jobs(include_archive=True)["jobs"] if job["job_path"] == str(archive)))
+        self.assertEqual(before, {path: digest(path) for path in self.root.rglob("*") if path.is_file()})
+
+    def test_list_jobs_recomputes_clean_and_notes_stale_and_keeps_bad_files(self):
+        folder = self.prepared()
+        clean = self.service.handoff(str(folder), "test")
+        cleaned = self.home / "clean-for-list.txt"
+        cleaned.write_text(self.service.paths(folder)["prepared"].read_text(encoding="utf-8"), encoding="utf-8")
+        self.service.import_cleaned(str(folder), str(cleaned))
+        notes = self.service.review(str(folder))["notes_job"]
+        notes_folder = folder
+        notes_path = Path(notes["path"])
+        self.edit(notes_folder, "cleaned", self.service.effective(notes_folder)["cleaned"].read_text(encoding="utf-8") + " 人工修訂。")
+        (self.notes / "test.md").write_text("profile changed", encoding="utf-8")
+        (self.root / ".llm_jobs" / "inbox" / "broken.json").write_text("[壞 JSON 物件]", encoding="utf-8")
+
+        result = self.service.list_jobs()
+        clean_row = next(item for item in result["jobs"] if item["job_id"] == clean["job_id"])
+        notes_row = next(item for item in result["jobs"] if item["job_id"] == notes["job_id"])
+        self.assertTrue(clean_row["stale"])
+        self.assertIn("profile", clean_row["stale_reasons"])
+        self.assertTrue(notes_row["stale"])
+        self.assertIn("cleaned", notes_row["stale_reasons"])
+        self.assertIn("profile", notes_row["stale_reasons"])
+        self.assertEqual(len(result["invalid"]), 1)
+        self.assertIn("broken.json", result["invalid"][0]["job_path"])
+
+    def test_list_jobs_validation_dispatch_and_missing_root_are_read_only(self):
+        self.assertFalse((self.root / ".llm_jobs").exists())
+        self.assertEqual(self.service.list_jobs(), {"jobs": [], "invalid": [], "root": str(self.service.root)})
+        self.assertFalse((self.root / ".llm_jobs").exists())
+        from src.desktop.service import dispatch
+        self.assertEqual(dispatch(self.service, {"action": "list_jobs"})["jobs"], [])
+        with self.assertRaisesRegex(ValueError, "stage"):
+            self.service.list_jobs(stage="summary")
+        with self.assertRaisesRegex(ValueError, "status"):
+            self.service.list_jobs(status={"queued"})
+        with self.assertRaisesRegex(ValueError, "include_archive"):
+            self.service.list_jobs(include_archive="yes")
+
 
 def _timeline(duration_ms: int, cue_ms: int = 30_000) -> str:
     blocks = []

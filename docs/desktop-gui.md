@@ -8,6 +8,8 @@
 
 內容確認成功後，Desk 會自動在 `.llm_jobs/inbox` 建立 notes job；同一份有效清洗稿、同一個 profile key 且 profile 檔 SHA-256 相同，已有 queued、running 或 done job 時才會重用。清洗稿或 profile 改變時，queued job 會依 stale 規則封存並建立新 job；不同 profile 的 running job 不會被靜默覆蓋，會回傳明確錯誤，必須等待完成後再切換。自動建立（review 通過後）仍沿用清洗交接所使用的 profile。若建立失敗，內容確認仍保留成功，但 Desk 會明確顯示錯誤，不會靜默略過。notes job 一律引用 Desk 目前生效的清洗稿，包含 `manual_revisions/` 下的人工訂正版。
 
+Agent 掃描工作固定使用 stdin CLI 的 `{"action":"list_jobs"}`；預設列 inbox，`include_archive: true` 才列 archive。支援 stage、status、folder 篩選，結果依 created_at 舊到新排序，同時間以 job_id 排序。此查詢只讀取檔案，不建立目錄、不寫入任何 job 或 state，也不取 meeting lock；完整回傳欄位與 stale 規則見 [工作契約流程](工作契約流程.md)。
+
 內建錄音、批次佇列、Drive GUI、LLM API、Notion 發布尚未實作。使用者可繼續使用語音備忘錄；現有 shell 入口仍保留。
 
 ## 人工訂正與會議名稱
