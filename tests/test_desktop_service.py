@@ -1,6 +1,8 @@
 """Desktop lifecycle tests: real files + fake local transcription binaries."""
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -855,6 +857,124 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(len(self.service.list_jobs(include_archive=True)["jobs"]), 3)
         self.assertTrue(all(job["location"] == "archive" for job in self.service.list_jobs(include_archive=True)["jobs"] if job["job_path"] == str(archive)))
         self.assertEqual(before, {path: digest(path) for path in self.root.rglob("*") if path.is_file()})
+
+    def test_list_jobs_sorts_created_at_and_job_id(self):
+        folder = self.prepared()
+        packet = self.service.handoff(str(folder), "test")
+        source = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
+        inbox = self.root / ".llm_jobs" / "inbox"
+        jobs = [("job-new", "2026-11-19T10:00:00+08:00"),
+                ("job-old-b", "2026-11-19T09:00:00+08:00"),
+                ("job-old-a", "2026-11-19T09:00:00+08:00")]
+        for job_id, created_at in jobs:
+            job = {**source, "job_id": job_id, "created_at": created_at}
+            (inbox / f"{job_id}.json").write_text(json.dumps(job), encoding="utf-8")
+        Path(packet["path"]).unlink()
+
+        listed = self.service.list_jobs()
+        self.assertEqual([job["job_id"] for job in listed["jobs"]], ["job-old-a", "job-old-b", "job-new"])
+
+    def test_list_jobs_rejects_invalid_status_and_folder_values(self):
+        folder = self.add()
+        with self.assertRaisesRegex(ValueError, "status"):
+            self.service.list_jobs(status="bogus")
+        with self.assertRaisesRegex(ValueError, "status"):
+            self.service.list_jobs(status=[])
+        with self.assertRaisesRegex(ValueError, "會議資料夾"):
+            self.service.list_jobs(folder=str(self.root / "missing"))
+        outside = self.home / "outside"
+        outside.mkdir()
+        with self.assertRaisesRegex(ValueError, "會議資料夾"):
+            self.service.list_jobs(folder=str(outside))
+        with self.assertRaisesRegex(ValueError, "folder"):
+            self.service.list_jobs(folder=folder)
+
+    def test_list_jobs_puts_missing_fields_non_object_and_bad_status_in_invalid(self):
+        folder = self.prepared()
+        packet = self.service.handoff(str(folder), "test")
+        valid = json.loads(Path(packet["path"]).read_text(encoding="utf-8"))
+        inbox = self.root / ".llm_jobs" / "inbox"
+        (inbox / "missing.json").write_text(json.dumps({"job_id": "missing"}), encoding="utf-8")
+        (inbox / "array.json").write_text("[]", encoding="utf-8")
+        invalid_status = {**valid, "job_id": "invalid-status", "status": "bogus"}
+        (inbox / "invalid-status.json").write_text(json.dumps(invalid_status), encoding="utf-8")
+
+        result = self.service.list_jobs(stage="notes", status="queued", folder=str(folder))
+        self.assertEqual(len(result["jobs"]), 0)
+        self.assertEqual({Path(item["job_path"]).name for item in result["invalid"]},
+                         {"missing.json", "array.json", "invalid-status.json"})
+
+    def test_list_jobs_reports_transcript_and_srt_stale_reasons(self):
+        folder = self.prepared()
+        packet = self.service.handoff(str(folder), "test")
+        paths = self.service.paths(folder)
+        input_path = self.service.effective(folder)["input"]
+        input_path.write_text(input_path.read_text(encoding="utf-8") + " transcript changed", encoding="utf-8")
+        row = next(item for item in self.service.list_jobs()["jobs"] if item["job_id"] == Path(packet["path"]).stem)
+        self.assertEqual(row["stale_reasons"], ["transcript"])
+        input_path.write_text(input_path.read_text(encoding="utf-8").removesuffix(" transcript changed"), encoding="utf-8")
+        paths["srt"].write_text(paths["srt"].read_text(encoding="utf-8") + "\n", encoding="utf-8")
+        row = next(item for item in self.service.list_jobs()["jobs"] if item["job_id"] == Path(packet["path"]).stem)
+        self.assertEqual(row["stale_reasons"], ["srt"])
+
+    def test_list_jobs_reports_meeting_files_detail_and_missing_meeting_dir(self):
+        folder = self.prepared()
+        packet = self.service.handoff(str(folder), "test")
+        job_path = Path(packet["path"])
+        job = json.loads(job_path.read_text(encoding="utf-8"))
+        state_path = folder / "desktop_state.json"
+        original_state = state_path.read_text(encoding="utf-8")
+        state_path.write_text("[]", encoding="utf-8")
+        row = next(item for item in self.service.list_jobs()["jobs"] if item["job_id"] == job["job_id"])
+        self.assertIn("meeting_files", row["stale_reasons"])
+        self.assertTrue(row["stale_detail"])
+        state_path.write_text(original_state, encoding="utf-8")
+        job["meeting_dir"] = str(self.root / "deleted-meeting")
+        job_path.write_text(json.dumps(job), encoding="utf-8")
+        row = next(item for item in self.service.list_jobs()["jobs"] if item["job_id"] == job["job_id"])
+        self.assertEqual(row["stale_reasons"], ["meeting_dir"])
+        self.assertIsNone(row["stale_detail"])
+
+    def test_list_jobs_result_ready_false_before_outbox_result_and_updated_at_is_taipei(self):
+        folder = self.prepared()
+        packet = self.service.handoff(str(folder), "test")
+        row = next(item for item in self.service.list_jobs()["jobs"] if item["job_id"] == Path(packet["path"]).stem)
+        self.assertFalse(row["result_ready"])
+        self.assertIn("+08:00", row["updated_at"])
+        result_path = Path(row["expected_output"]["result_path"])
+        result_path.write_text("{}", encoding="utf-8")
+        row = next(item for item in self.service.list_jobs()["jobs"] if item["job_id"] == Path(packet["path"]).stem)
+        self.assertTrue(row["result_ready"])
+
+    def test_list_jobs_cli_is_read_only_and_uses_temporary_meeting_root(self):
+        folder = self.prepared()
+        packet = self.service.handoff(str(folder), "test")
+        before_files = {path: digest(path) for path in self.root.rglob("*") if path.is_file()}
+        before_tree = sorted(str(path.relative_to(self.root)) for path in self.root.rglob("*"))
+        env_path = REPO / ".env"
+        had_env = env_path.exists()
+        old_env = env_path.read_bytes() if had_env else None
+
+        def restore_env():
+            if had_env:
+                env_path.write_bytes(old_env)
+            else:
+                env_path.unlink(missing_ok=True)
+        self.addCleanup(restore_env)
+        env_path.write_text(f"MEETING_RECORDS_DIR={self.root}\n", encoding="utf-8")
+        process = subprocess.run(
+            [sys.executable, "-m", "src.desktop"], cwd=REPO,
+            input=json.dumps({"action": "list_jobs"}) + "\n", text=True,
+            capture_output=True, env={**os.environ, "PYTHONPATH": str(REPO)}, check=False,
+        )
+        result_lines = [json.loads(line) for line in process.stdout.splitlines() if line]
+        result = next(line for line in result_lines if line.get("type") == "result")
+        self.assertEqual(process.returncode, 0, process.stderr)
+        self.assertTrue(result["ok"])
+        self.assertEqual([job["job_id"] for job in result["jobs"]], [packet["job_id"]])
+        self.assertNotIn("/Users/user/MeetingRecords", result["root"])
+        self.assertEqual(before_files, {path: digest(path) for path in self.root.rglob("*") if path.is_file()})
+        self.assertEqual(before_tree, sorted(str(path.relative_to(self.root)) for path in self.root.rglob("*")))
 
     def test_list_jobs_recomputes_clean_and_notes_stale_and_keeps_bad_files(self):
         folder = self.prepared()

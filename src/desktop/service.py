@@ -385,7 +385,7 @@ class DesktopService:
         input_key = "transcript" if job["stage"] == "clean" else "cleaned"
         main_input = job["inputs"][input_key]
         updated_at = datetime.fromtimestamp(path.stat().st_mtime, TZ).isoformat()
-        stale = self._list_job_stale(job)
+        stale, stale_detail = self._list_job_stale_info(job)
         result_path = Path(job["expected_output"]["result_path"])
         created_at = datetime.fromisoformat(job["created_at"])
         if created_at.tzinfo is None:
@@ -399,15 +399,19 @@ class DesktopService:
             "input_path": main_input["path"], "input_sha256": main_input["sha256"],
             "expected_output": job["expected_output"], "result_ready": result_path.is_file(),
             "created_at": job["created_at"], "updated_at": updated_at,
-            "stale": bool(stale), "stale_reasons": stale,
+            "stale": bool(stale), "stale_reasons": stale, "stale_detail": stale_detail,
             "_created_at": created_at,
         }
 
     def _list_job_stale(self, job: dict) -> list[str]:
+        return self._list_job_stale_info(job)[0]
+
+    def _list_job_stale_info(self, job: dict) -> tuple[list[str], str | None]:
         reasons = ["status"] if job["status"] == "stale" else []
         folder = Path(job["meeting_dir"]).expanduser().resolve()
         if not folder.is_dir():
-            return reasons + ["meeting_dir"]
+            return list(dict.fromkeys(reasons + ["meeting_dir"])), None
+        stale_detail = None
         try:
             state = read_json(folder / STATE_NAME)
             paths = self.effective(folder, state)
@@ -428,9 +432,10 @@ class DesktopService:
                     reasons.append("cleaned")
             if profile_sha != job["profile"].get("sha256") or not profile_path.is_file():
                 reasons.append("profile")
-        except (OSError, ValueError, KeyError, TypeError):
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             reasons.append("meeting_files")
-        return list(dict.fromkeys(reasons))
+            stale_detail = str(exc) or exc.__class__.__name__
+        return list(dict.fromkeys(reasons)), stale_detail
 
     def inspect_audio(self, value: str) -> dict:
         path = Path(value).expanduser().resolve()
