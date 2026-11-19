@@ -1,6 +1,7 @@
 """Desktop lifecycle tests: real files + fake local transcription binaries."""
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -953,28 +954,29 @@ class DesktopTests(unittest.TestCase):
         before_tree = sorted(str(path.relative_to(self.root)) for path in self.root.rglob("*"))
         env_path = REPO / ".env"
         had_env = env_path.exists()
-        old_env = env_path.read_bytes() if had_env else None
-
-        def restore_env():
-            if had_env:
-                env_path.write_bytes(old_env)
-            else:
-                env_path.unlink(missing_ok=True)
-        self.addCleanup(restore_env)
-        env_path.write_text(f"MEETING_RECORDS_DIR={self.root}\n", encoding="utf-8")
+        env_before = (env_path.stat().st_mtime_ns, env_path.read_bytes()) if had_env else None
+        tmp_repo = self.home / "cli-repo"
+        shutil.copytree(REPO / "src", tmp_repo / "src")
+        shutil.copy2(REPO / "env_loader.py", tmp_repo / "env_loader.py")
+        (tmp_repo / ".local").mkdir()
+        (tmp_repo / ".local" / "desktop_settings.json").write_text(
+            json.dumps({"output_root": str(self.root)}), encoding="utf-8"
+        )
         process = subprocess.run(
-            [sys.executable, "-m", "src.desktop"], cwd=REPO,
+            [sys.executable, "-m", "src.desktop"], cwd=tmp_repo,
             input=json.dumps({"action": "list_jobs"}) + "\n", text=True,
-            capture_output=True, env={**os.environ, "PYTHONPATH": str(REPO)}, check=False,
+            capture_output=True, env={**os.environ, "PYTHONPATH": str(tmp_repo)}, check=False,
         )
         result_lines = [json.loads(line) for line in process.stdout.splitlines() if line]
         result = next(line for line in result_lines if line.get("type") == "result")
         self.assertEqual(process.returncode, 0, process.stderr)
         self.assertTrue(result["ok"])
         self.assertEqual([job["job_id"] for job in result["jobs"]], [packet["job_id"]])
-        self.assertNotIn("/Users/user/MeetingRecords", result["root"])
+        self.assertEqual(result["root"], str(self.root.resolve()))
         self.assertEqual(before_files, {path: digest(path) for path in self.root.rglob("*") if path.is_file()})
         self.assertEqual(before_tree, sorted(str(path.relative_to(self.root)) for path in self.root.rglob("*")))
+        env_after = (env_path.stat().st_mtime_ns, env_path.read_bytes()) if had_env else None
+        self.assertEqual(env_after, env_before)
 
     def test_list_jobs_recomputes_clean_and_notes_stale_and_keeps_bad_files(self):
         folder = self.prepared()
