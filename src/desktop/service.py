@@ -1053,10 +1053,9 @@ class DesktopService:
 
 
 ACTION_REGISTRY = [
-    {"name": "help", "summary": "不帶 name 時列出所有 action；帶 name 時回傳單一 action 的說明欄位。",
+    {"name": "help", "summary": "不帶 name 時回傳 actions；帶 name 時回傳該 action 的說明欄位（name、summary、required、optional、returns、read_only、long_running、cancellable）。",
      "required": {}, "optional": {"name": {"type": "string", "default": None}},
-     "returns": {"without_name": ["actions"], "with_name": ["name", "summary", "required", "optional",
-                                                              "returns", "read_only", "long_running", "cancellable"]},
+     "returns": ["actions", "name", "summary", "required", "optional", "returns", "read_only", "long_running", "cancellable"],
      "read_only": True, "long_running": False, "cancellable": False,
      "handler": "help"},
     {"name": "environment", "summary": "檢查 Meeting Desk 的設定、模型、執行檔與提示詞。",

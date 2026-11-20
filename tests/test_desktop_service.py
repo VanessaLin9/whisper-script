@@ -69,6 +69,19 @@ class DesktopTests(unittest.TestCase):
         self.assertEqual(registered, set(HANDLERS))
         self.assertTrue(all(callable(handler) for handler in HANDLERS.values()))
 
+    def test_action_registry_entries_have_consistent_schema(self):
+        required_keys = {"name", "summary", "required", "optional", "returns", "read_only",
+                         "long_running", "cancellable", "handler"}
+        boolean_keys = {"read_only", "long_running", "cancellable"}
+        for action in ACTION_REGISTRY:
+            self.assertEqual(set(action), required_keys, action["name"])
+            self.assertIsInstance(action["required"], dict, action["name"])
+            self.assertIsInstance(action["optional"], dict, action["name"])
+            self.assertIsInstance(action["returns"], list, action["name"])
+            self.assertTrue(all(isinstance(value, str) for value in action["returns"]), action["name"])
+            for key in boolean_keys:
+                self.assertIsInstance(action[key], bool, f'{action["name"]}.{key}')
+
     def test_dispatch_errors_name_unknown_action(self):
         with self.assertRaisesRegex(ValueError, "未知操作.*environment.*save_edit"):
             dispatch(self.service, {"action": "not_real"})
