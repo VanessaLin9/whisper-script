@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.common.cancellation import CancellationController, OperationCancelled
-from src.desktop.service import ACTION_REGISTRY, DesktopService, digest, dispatch, meeting_lock, read_json
+from src.desktop.service import ACTION_REGISTRY, HANDLERS, DesktopService, digest, dispatch, meeting_lock, read_json
 from src.output_manager import SourceKind
 
 REPO = Path(__file__).resolve().parents[1]
@@ -63,6 +63,11 @@ class DesktopTests(unittest.TestCase):
         self.assertTrue(result["read_only"])
         self.assertIn("include_archive", result["optional"])
         self.assertNotIn("actions", result)
+
+    def test_action_registry_and_handlers_are_in_sync(self):
+        registered = {item["handler"] for item in ACTION_REGISTRY if item["handler"] != "help"}
+        self.assertEqual(registered, set(HANDLERS))
+        self.assertTrue(all(callable(handler) for handler in HANDLERS.values()))
 
     def test_dispatch_errors_name_unknown_action(self):
         with self.assertRaisesRegex(ValueError, "未知操作.*environment.*save_edit"):

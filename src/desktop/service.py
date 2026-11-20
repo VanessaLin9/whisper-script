@@ -1053,9 +1053,11 @@ class DesktopService:
 
 
 ACTION_REGISTRY = [
-    {"name": "help", "summary": "取得 Meeting Desk 支援的操作與參數說明。",
+    {"name": "help", "summary": "不帶 name 時列出所有 action；帶 name 時回傳單一 action 的說明欄位。",
      "required": {}, "optional": {"name": {"type": "string", "default": None}},
-     "returns": ["actions"], "read_only": True, "long_running": False, "cancellable": False,
+     "returns": {"without_name": ["actions"], "with_name": ["name", "summary", "required", "optional",
+                                                              "returns", "read_only", "long_running", "cancellable"]},
+     "read_only": True, "long_running": False, "cancellable": False,
      "handler": "help"},
     {"name": "environment", "summary": "檢查 Meeting Desk 的設定、模型、執行檔與提示詞。",
      "required": {}, "optional": {}, "returns": ["settings", "checks", "profiles"],
@@ -1111,6 +1113,35 @@ ACTION_REGISTRY = [
 ]
 
 
+HANDLERS = {
+    "environment": lambda service, request, cancellation, progress: service.environment(),
+    "settings": lambda service, request, cancellation, progress: service.save_settings(request["settings"]),
+    "list": lambda service, request, cancellation, progress: service.meetings(),
+    "list_jobs": lambda service, request, cancellation, progress: service.list_jobs(
+        stage=request.get("stage"), status=request.get("status"), folder=request.get("folder"),
+        include_archive=request.get("include_archive", False)),
+    "inspect": lambda service, request, cancellation, progress: service.inspect_audio(request["path"]),
+    "import": lambda service, request, cancellation, progress: service.import_audio(
+        request["path"], request["title"], request["meeting_time"]),
+    "process": lambda service, request, cancellation, progress: service.process(
+        request["folder"], cancellation, progress),
+    "handoff": lambda service, request, cancellation, progress: service.handoff(
+        request["folder"], request["profile"], request.get("summary", False)),
+    "import_cleaned": lambda service, request, cancellation, progress: service.import_cleaned(
+        request["folder"], request["path"]),
+    "import_job": lambda service, request, cancellation, progress: service.import_job(request["folder"]),
+    "import_notes": lambda service, request, cancellation, progress: service.import_notes(request["folder"]),
+    "review": lambda service, request, cancellation, progress: service.review(request["folder"]),
+    "preview": lambda service, request, cancellation, progress: service.preview(
+        request["folder"], request["kind"]),
+    "rename": lambda service, request, cancellation, progress: service.rename(
+        request["folder"], request["title"], request["expected_title"]),
+    "save_edit": lambda service, request, cancellation, progress: service.save_edit(
+        request["folder"], request["kind"], request["token"],
+        text=request.get("text"), cues=request.get("cues")),
+}
+
+
 def action_help(name=None) -> dict:
     public = [{key: value for key, value in action.items() if key != "handler"} for action in ACTION_REGISTRY]
     if name is not None:
@@ -1134,26 +1165,7 @@ def dispatch(service: DesktopService, request: dict, cancellation=None, progress
         raise ValueError("缺少必要參數：" + "、".join(missing) + "。")
     if action == "help":
         return action_help(request.get("name"))
-    handlers = {
-        "environment": lambda: service.environment(),
-        "settings": lambda: service.save_settings(request["settings"]),
-        "list": lambda: service.meetings(),
-        "list_jobs": lambda: service.list_jobs(stage=request.get("stage"), status=request.get("status"),
-                                                 folder=request.get("folder"), include_archive=request.get("include_archive", False)),
-        "inspect": lambda: service.inspect_audio(request["path"]),
-        "import": lambda: service.import_audio(request["path"], request["title"], request["meeting_time"]),
-        "process": lambda: service.process(request["folder"], cancellation, progress),
-        "handoff": lambda: service.handoff(request["folder"], request["profile"], request.get("summary", False)),
-        "import_cleaned": lambda: service.import_cleaned(request["folder"], request["path"]),
-        "import_job": lambda: service.import_job(request["folder"]),
-        "import_notes": lambda: service.import_notes(request["folder"]),
-        "review": lambda: service.review(request["folder"]),
-        "preview": lambda: service.preview(request["folder"], request["kind"]),
-        "rename": lambda: service.rename(request["folder"], request["title"], request["expected_title"]),
-        "save_edit": lambda: service.save_edit(request["folder"], request["kind"], request["token"],
-                                                 text=request.get("text"), cues=request.get("cues")),
-    }
     try:
-        return handlers[spec["handler"]]()
+        return HANDLERS[spec["handler"]](service, request, cancellation, progress)
     except KeyError as exc:
         raise RuntimeError(f"未註冊的 action handler：{spec['handler']}。") from exc
