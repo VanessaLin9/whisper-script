@@ -1052,23 +1052,119 @@ class DesktopService:
         return result
 
 
+ACTION_REGISTRY = [
+    {"name": "help", "summary": "不帶 name 時回傳 actions；帶 name 時回傳該 action 的說明欄位（name、summary、required、optional、returns、read_only、long_running、cancellable）。",
+     "required": {}, "optional": {"name": {"type": "string", "default": None}},
+     "returns": ["actions", "name", "summary", "required", "optional", "returns", "read_only", "long_running", "cancellable"],
+     "read_only": True, "long_running": False, "cancellable": False,
+     "handler": "help"},
+    {"name": "environment", "summary": "檢查 Meeting Desk 的設定、模型、執行檔與提示詞。",
+     "required": {}, "optional": {}, "returns": ["settings", "checks", "profiles"],
+     "read_only": True, "long_running": False, "cancellable": False, "handler": "environment"},
+    {"name": "settings", "summary": "儲存並回傳 Meeting Desk 設定。",
+     "required": {"settings": "object"}, "optional": {}, "returns": ["settings", "checks", "profiles"],
+     "read_only": False, "long_running": False, "cancellable": False, "handler": "settings"},
+    {"name": "list", "summary": "列出會議資料夾與目前處理狀態。",
+     "required": {}, "optional": {}, "returns": ["meetings", "warnings"],
+     "read_only": True, "long_running": False, "cancellable": False, "handler": "list"},
+    {"name": "list_jobs", "summary": "唯讀列出 LLM inbox 與可選的 archive 工作。",
+     "required": {}, "optional": {"stage": {"type": "string", "default": None}, "status": {"type": "string_or_array", "default": None},
+     "folder": {"type": "string", "default": None}, "include_archive": {"type": "boolean", "default": False}},
+     "returns": ["jobs", "invalid", "root"], "read_only": True, "long_running": False, "cancellable": False,
+     "handler": "list_jobs"},
+    {"name": "inspect", "summary": "讀取音訊檔並推測會議時間。",
+     "required": {"path": "string"}, "optional": {}, "returns": ["path", "title", "meeting_time", "time_source"],
+     "read_only": True, "long_running": False, "cancellable": False, "handler": "inspect"},
+    {"name": "import", "summary": "將音訊匯入新的會議資料夾。",
+     "required": {"path": "string", "title": "string", "meeting_time": "string"}, "optional": {},
+     "returns": ["meeting"], "read_only": False, "long_running": False, "cancellable": False, "handler": "import"},
+    {"name": "process", "summary": "轉錄音訊並產生預清洗稿。",
+     "required": {"folder": "string"}, "optional": {}, "returns": ["meeting"],
+     "read_only": False, "long_running": True, "cancellable": True, "handler": "process"},
+    {"name": "handoff", "summary": "建立清洗或會議記錄的 LLM 工作。",
+     "required": {"folder": "string", "profile": "string"}, "optional": {"summary": {"type": "boolean", "default": False}},
+     "returns": ["path", "text", "meeting", "job_id", "deduplicated"], "read_only": False,
+     "long_running": False, "cancellable": False, "handler": "handoff"},
+    {"name": "import_cleaned", "summary": "匯入 LLM 清洗稿並等待人工確認。",
+     "required": {"folder": "string", "path": "string"}, "optional": {}, "returns": ["meeting"],
+     "read_only": False, "long_running": False, "cancellable": False, "handler": "import_cleaned"},
+    {"name": "import_job", "summary": "匯入清洗工作完成的 outbox 結果。",
+     "required": {"folder": "string"}, "optional": {}, "returns": ["meeting"],
+     "read_only": False, "long_running": False, "cancellable": False, "handler": "import_job"},
+    {"name": "import_notes", "summary": "匯入會議記錄工作產生的 coverage 與草稿。",
+     "required": {"folder": "string"}, "optional": {}, "returns": ["meeting", "coverage_path", "draft_path"],
+     "read_only": False, "long_running": False, "cancellable": False, "handler": "import_notes"},
+    {"name": "review", "summary": "人工確認清洗稿並自動建立會議記錄工作。",
+     "required": {"folder": "string"}, "optional": {}, "returns": ["meeting", "notes_job_error", "notes_job"],
+     "read_only": False, "long_running": False, "cancellable": False, "handler": "review"},
+    {"name": "preview", "summary": "讀取會議某個階段的稿件預覽與編輯 token。",
+     "required": {"folder": "string", "kind": "string"}, "optional": {},
+     "returns": ["text", "path", "token", "editable", "cues"], "read_only": True,
+     "long_running": False, "cancellable": False, "handler": "preview"},
+    {"name": "rename", "summary": "更新會議顯示名稱。",
+     "required": {"folder": "string", "title": "string", "expected_title": "string"}, "optional": {},
+     "returns": ["meeting"], "read_only": False, "long_running": False, "cancellable": False, "handler": "rename"},
+    {"name": "save_edit", "summary": "以 token 儲存人工訂正的稿件或字幕文字。",
+     "required": {"folder": "string", "kind": "string", "token": "string"},
+     "optional": {"text": {"type": "string", "default": None}, "cues": {"type": "array", "default": None}},
+     "returns": ["meeting", "kind", "changed", "warning"], "read_only": False,
+     "long_running": False, "cancellable": False, "handler": "save_edit"},
+]
+
+
+HANDLERS = {
+    "environment": lambda service, request, cancellation, progress: service.environment(),
+    "settings": lambda service, request, cancellation, progress: service.save_settings(request["settings"]),
+    "list": lambda service, request, cancellation, progress: service.meetings(),
+    "list_jobs": lambda service, request, cancellation, progress: service.list_jobs(
+        stage=request.get("stage"), status=request.get("status"), folder=request.get("folder"),
+        include_archive=request.get("include_archive", False)),
+    "inspect": lambda service, request, cancellation, progress: service.inspect_audio(request["path"]),
+    "import": lambda service, request, cancellation, progress: service.import_audio(
+        request["path"], request["title"], request["meeting_time"]),
+    "process": lambda service, request, cancellation, progress: service.process(
+        request["folder"], cancellation, progress),
+    "handoff": lambda service, request, cancellation, progress: service.handoff(
+        request["folder"], request["profile"], request.get("summary", False)),
+    "import_cleaned": lambda service, request, cancellation, progress: service.import_cleaned(
+        request["folder"], request["path"]),
+    "import_job": lambda service, request, cancellation, progress: service.import_job(request["folder"]),
+    "import_notes": lambda service, request, cancellation, progress: service.import_notes(request["folder"]),
+    "review": lambda service, request, cancellation, progress: service.review(request["folder"]),
+    "preview": lambda service, request, cancellation, progress: service.preview(
+        request["folder"], request["kind"]),
+    "rename": lambda service, request, cancellation, progress: service.rename(
+        request["folder"], request["title"], request["expected_title"]),
+    "save_edit": lambda service, request, cancellation, progress: service.save_edit(
+        request["folder"], request["kind"], request["token"],
+        text=request.get("text"), cues=request.get("cues")),
+}
+
+
+def action_help(name=None) -> dict:
+    public = [{key: value for key, value in action.items() if key != "handler"} for action in ACTION_REGISTRY]
+    if name is not None:
+        for action in public:
+            if action["name"] == name:
+                return action
+        raise ValueError(f"找不到 action「{name}」。可用 action：{', '.join(item['name'] for item in public)}。")
+    return {"actions": public}
+
+
 def dispatch(service: DesktopService, request: dict, cancellation=None, progress=lambda value: None) -> dict:
+    if not isinstance(request, dict) or "action" not in request:
+        raise ValueError("缺少必要參數：action。")
     action = request["action"]
-    if action == "environment": return service.environment()
-    if action == "settings": return service.save_settings(request["settings"])
-    if action == "list": return service.meetings()
-    if action == "list_jobs":
-        return service.list_jobs(stage=request.get("stage"), status=request.get("status"),
-                                 folder=request.get("folder"), include_archive=request.get("include_archive", False))
-    if action == "inspect": return service.inspect_audio(request["path"])
-    if action == "import": return service.import_audio(request["path"], request["title"], request["meeting_time"])
-    if action == "process": return service.process(request["folder"], cancellation, progress)
-    if action == "handoff": return service.handoff(request["folder"], request["profile"], request.get("summary", False))
-    if action == "import_cleaned": return service.import_cleaned(request["folder"], request["path"])
-    if action == "import_job": return service.import_job(request["folder"])
-    if action == "import_notes": return service.import_notes(request["folder"])
-    if action == "review": return service.review(request["folder"])
-    if action == "preview": return service.preview(request["folder"], request["kind"])
-    if action == "rename": return service.rename(request["folder"], request["title"], request["expected_title"])
-    if action == "save_edit": return service.save_edit(request["folder"], request["kind"], request["token"], text=request.get("text"), cues=request.get("cues"))
-    raise ValueError("未知操作。")
+    by_name = {item["name"]: item for item in ACTION_REGISTRY}
+    if action not in by_name:
+        raise ValueError(f"未知操作「{action}」。可用 action：{', '.join(by_name)}。")
+    spec = by_name[action]
+    missing = [name for name in spec["required"] if name not in request]
+    if missing:
+        raise ValueError("缺少必要參數：" + "、".join(missing) + "。")
+    if action == "help":
+        return action_help(request.get("name"))
+    try:
+        return HANDLERS[spec["handler"]](service, request, cancellation, progress)
+    except KeyError as exc:
+        raise RuntimeError(f"未註冊的 action handler：{spec['handler']}。") from exc
