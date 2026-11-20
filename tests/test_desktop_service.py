@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from src.common.cancellation import CancellationController, OperationCancelled
-from src.desktop.service import DesktopService, digest, meeting_lock, read_json
+from src.desktop.service import ACTION_REGISTRY, DesktopService, digest, dispatch, meeting_lock, read_json
 from src.output_manager import SourceKind
 
 REPO = Path(__file__).resolve().parents[1]
@@ -48,6 +48,29 @@ class DesktopTests(unittest.TestCase):
     def add(self):
         result = self.service.import_audio(str(self.audio), "中文 AI 會議", "2026-09-07 09:30")
         return Path(result["meeting"]["id"])
+
+    def test_help_registry_matches_dispatch_actions(self):
+        help_result = dispatch(self.service, {"action": "help"})
+        listed = [item["name"] for item in help_result["actions"]]
+        self.assertEqual(listed, [item["name"] for item in ACTION_REGISTRY])
+        self.assertEqual(set(listed), {"help", "environment", "settings", "list", "list_jobs", "inspect",
+                                       "import", "process", "handoff", "import_cleaned", "import_job",
+                                       "import_notes", "review", "preview", "rename", "save_edit"})
+
+    def test_help_can_return_one_action(self):
+        result = dispatch(self.service, {"action": "help", "name": "list_jobs"})
+        self.assertEqual(result["name"], "list_jobs")
+        self.assertTrue(result["read_only"])
+        self.assertIn("include_archive", result["optional"])
+        self.assertNotIn("actions", result)
+
+    def test_dispatch_errors_name_unknown_action(self):
+        with self.assertRaisesRegex(ValueError, "未知操作.*environment.*save_edit"):
+            dispatch(self.service, {"action": "not_real"})
+
+    def test_dispatch_errors_name_missing_parameters(self):
+        with self.assertRaisesRegex(ValueError, "缺少必要參數：folder、profile"):
+            dispatch(self.service, {"action": "handoff"})
 
     def prepared(self):
         folder = self.add()
