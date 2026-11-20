@@ -18,11 +18,42 @@ resolve_workflow_paths
 # Raw capture 預設 48 kHz；Whisper 輸入另由 core normalize 成 16 kHz mono（PR #10）。
 AUDIO_CHANNELS="${RECORDING_CHANNELS:-1}"
 AUDIO_SAMPLE_RATE="${RECORDING_SAMPLE_RATE:-48000}"
+RECORDING_SOURCE="${RECORDING_SOURCE:-mic}"
+case "$RECORDING_SOURCE" in
+    mic|system|both) ;;
+    *) echo "[!] RECORDING_SOURCE must be mic, system, or both"; exit 1 ;;
+esac
+if [ -t 0 ]; then
+    echo "錄音來源：1) 麥克風  2) 系統音（耳機裡的聲音）  3) 系統音＋麥克風"
+    read -r -p "選擇來源 [預設 ${RECORDING_SOURCE}]：" source_choice
+    case "$source_choice" in
+        1|mic) RECORDING_SOURCE=mic ;;
+        2|system) RECORDING_SOURCE=system ;;
+        3|both) RECORDING_SOURCE=both ;;
+        "") ;;
+        *) echo "[!] 無效的來源；未開始錄音。"; exit 1 ;;
+    esac
+fi
+echo "[*] 請確認會議場合允許錄音，並視需要告知與會者。"
+echo "[*] Selected source: $RECORDING_SOURCE (no automatic detection or fallback)"
+if [ "$RECORDING_SOURCE" = mic ]; then
+    echo "[!] 麥克風模式不會直接錄到耳機裡的遠端聲音。"
+else
+    echo "[*] 只擷取音訊，不保存螢幕畫面；開始前安靜不會阻止錄音。"
+    RECORDER="${REPO_ROOT}/.local/recorder/meeting-recorder"
+    if [ ! -x "$RECORDER" ] || [ "${REPO_ROOT}/native/recorder/MeetingRecorder.swift" -nt "$RECORDER" ] || [ "${REPO_ROOT}/native/recorder/Info.plist" -nt "$RECORDER" ] || [ "${SCRIPT_DIR}/build-recorder.sh" -nt "$RECORDER" ]; then
+        bash "${SCRIPT_DIR}/build-recorder.sh"
+    fi
+fi
 
 echo "[*] Configuration summary:"
 echo "    Whisper root: $WHISPER_ROOT"
 echo "    Output dir: $MEETING_RECORDS_DIR"
-echo "    Mic device: $MIC_DEVICE"
+if [ "$RECORDING_SOURCE" = mic ]; then
+    echo "    FFmpeg mic device: $MIC_DEVICE"
+elif [ "$RECORDING_SOURCE" = both ]; then
+    echo "    Native mic: ${RECORDING_MIC_DEVICE_ID:-macOS default input}"
+fi
 echo "    Preferred model: $PREFERRED_MODEL"
 echo "    Language: $DEFAULT_LANGUAGE"
 echo "    Threads: $THREADS"
@@ -32,44 +63,104 @@ echo
 STAGING_DIR="${MEETING_RECORDS_DIR}/.incoming"
 mkdir -p "$STAGING_DIR"
 
-ts="$(date +'%Y%m%d_%H%M%S')"
-stem="meeting_${ts}"
+ts="$(TZ=Asia/Taipei date +'%Y%m%d_%H%M%S')"
+recorded_at="$(TZ=Asia/Taipei date +'%Y-%m-%dT%H:%M:%S+08:00')"
+stem="meeting_${ts}_$$"
 wav="${STAGING_DIR}/${stem}.wav"
-ffmpeg_log="${STAGING_DIR}/ffmpeg_${ts}.log"
+ffmpeg_log="${STAGING_DIR}/ffmpeg_${ts}_$$.log"
+system_wav="${STAGING_DIR}/${stem}_system.wav"
+mic_wav="${STAGING_DIR}/${stem}_microphone.wav"
+capture_manifest="${STAGING_DIR}/${stem}_capture.json"
+capture_info="${STAGING_DIR}/${stem}_info.json"
 
-echo "[*] Available audio devices:"
-ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | sed 's/^/[ffmpeg] /' || true
+if [ "$RECORDING_SOURCE" = mic ]; then
+    echo "[*] Available audio devices:"
+    ffmpeg -f avfoundation -list_devices true -i "" 2>&1 | sed 's/^/[ffmpeg] /' || true
+fi
 echo
 
 echo "[*] Starting recording to: $wav"
 echo "[*] Using transcription model: $(basename "$MODEL_FILE")"
-echo "[*] Audio settings: ${AUDIO_CHANNELS} channel(s), ${AUDIO_SAMPLE_RATE}Hz"
+if [ "$RECORDING_SOURCE" = mic ]; then
+    echo "[*] Audio settings: ${AUDIO_CHANNELS} channel(s), ${AUDIO_SAMPLE_RATE}Hz"
+else
+    echo "[*] Audio settings: 48 kHz mono PCM16 per track (native capture)"
+fi
 echo "[*] Press Ctrl+C to stop recording and start transcription..."
 echo
 
 RECORDING_INTERRUPTED=0
+RECORDING_ABORTED=0
 FF_PID=""
+LOG_PID=""
 
 on_record_interrupt() {
     RECORDING_INTERRUPTED=1
     echo -e "\n[*] Stopping recording..."
     if [ -n "${FF_PID}" ]; then
-        kill "${FF_PID}" 2>/dev/null || true
+        # Background jobs may inherit SIGINT ignored. SIGTERM is handled by
+        # the native recorder and lets FFmpeg finalize its WAV header too.
+        kill -TERM "${FF_PID}" 2>/dev/null || true
     fi
 }
 
 trap on_record_interrupt INT
+trap 'RECORDING_ABORTED=1; on_record_interrupt' TERM
 
-ffmpeg -f avfoundation -i "$MIC_DEVICE" \
-    -ac "$AUDIO_CHANNELS" -ar "$AUDIO_SAMPLE_RATE" -c:a pcm_s16le "$wav" \
-    >"$ffmpeg_log" 2>&1 &
-FF_PID=$!
+if [ "$RECORDING_SOURCE" = mic ]; then
+    ffmpeg -nostdin -n -f avfoundation -i "$MIC_DEVICE" \
+        -ac "$AUDIO_CHANNELS" -ar "$AUDIO_SAMPLE_RATE" -c:a pcm_s16le "$wav" \
+        >"$ffmpeg_log" 2>&1 &
+    FF_PID=$!
+else
+    capture_args=(--source "$RECORDING_SOURCE" --output "$system_wav" --metadata "$capture_info")
+    if [ "$RECORDING_SOURCE" = both ]; then
+        capture_args+=(--mic-output "$mic_wav")
+        if [ -n "${RECORDING_MIC_DEVICE_ID:-}" ]; then
+            capture_args+=(--mic-device-id "$RECORDING_MIC_DEVICE_ID")
+        fi
+    fi
+    "$RECORDER" "${capture_args[@]}" >"$ffmpeg_log" 2>&1 &
+    FF_PID=$!
+    # Follow diagnostics without putting the recorder in a pipeline (its PID
+    # must remain the signal target, and /dev/fd is unavailable in some sandboxes).
+    tail -n +1 -f "$ffmpeg_log" &
+    LOG_PID=$!
+fi
 
 set +e
 wait "$FF_PID"
 FF_STATUS=$?
+# An interrupt can end bash's wait before the child has closed the WAV.
+while kill -0 "$FF_PID" 2>/dev/null; do
+    wait "$FF_PID"
+    FF_STATUS=$?
+done
 set -e
-trap - INT
+trap - INT TERM
+if [ -n "$LOG_PID" ]; then
+    kill "$LOG_PID" 2>/dev/null || true
+    wait "$LOG_PID" 2>/dev/null || true
+fi
+if [ "$RECORDING_ABORTED" -eq 1 ]; then
+    echo "[!] Recording terminated. Capture files/log kept: $STAGING_DIR"
+    exit 143
+fi
+if [ "$RECORDING_SOURCE" != mic ]; then
+    cat "$ffmpeg_log"
+    if [ "$FF_STATUS" -ne 0 ]; then
+        echo "[!] Native capture failed (exit $FF_STATUS); files/log kept: $STAGING_DIR"
+        exit 1
+    fi
+    prepare_args=(prepare --system "$system_wav" --output "$wav" --manifest "$capture_manifest" --capture-info "$capture_info"
+        --system-gain "${RECORDING_SYSTEM_GAIN:-1}" --mic-gain "${RECORDING_MIC_GAIN:-1}")
+    if [ "$RECORDING_SOURCE" = both ]; then prepare_args+=(--microphone "$mic_wav"); fi
+    python3 "${SCRIPT_DIR}/prepare_capture.py" "${prepare_args[@]}" >>"$ffmpeg_log" 2>&1 || {
+        cat "$ffmpeg_log"
+        exit 1
+    }
+    recorded_at="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["recorded_at"])' "$capture_manifest")"
+fi
 
 if [ "$RECORDING_INTERRUPTED" -eq 0 ] && [ "$FF_STATUS" -ne 0 ]; then
     echo "[!] FFmpeg recording failed (exit ${FF_STATUS})"
@@ -101,6 +192,7 @@ ORGANIZED_JSON="$(
     python3 "$ORGANIZER" "$wav" \
       --records-dir "$MEETING_RECORDS_DIR" \
       --retain-source \
+      --recorded-at "$recorded_at" \
       --yes
 )"
 ORGANIZER_STATUS=$?
@@ -120,6 +212,11 @@ base="${MEETING_DIR}/${stem}"
 
 # Keep the capture log beside the raw source and transcription artifacts.
 cp "$ffmpeg_log" "${MEETING_DIR}/ffmpeg_${ts}.log"
+if [ "$RECORDING_SOURCE" != mic ]; then
+    python3 "${SCRIPT_DIR}/prepare_capture.py" retain \
+        --manifest "$capture_manifest" --workspace "$MEETING_DIR" \
+        --stem "$stem" --recorded-at "$recorded_at"
+fi
 
 DEFAULT_OUTPUTS="$(
   PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}" \
@@ -144,7 +241,7 @@ PYTHONPATH="${REPO_ROOT}${PYTHONPATH:+:$PYTHONPATH}" python3 -m src.transcriptio
     --normalize \
     --keep-normalized \
     --stream-subprocess \
-    --ffmpeg ffmpeg
+    --ffmpeg ffmpeg </dev/null
 STATUS=$?
 set -e
 
@@ -158,6 +255,9 @@ fi
 # The retained workspace copy is now authoritative. Remove only the staging
 # copy created by this invocation so failed runs can still be retried.
 rm -f "$wav" "$ffmpeg_log"
+if [ "$RECORDING_SOURCE" != mic ]; then
+    rm -f "$system_wav" "$mic_wav" "$capture_manifest" "$capture_info"
+fi
 
 echo
 echo "[✓] Transcription complete!"

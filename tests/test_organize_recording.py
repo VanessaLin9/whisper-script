@@ -89,6 +89,18 @@ class OrganizeRecordingTests(unittest.TestCase):
             self.assertTrue(metadata["retained_in_workspace"])
             self.assertEqual(metadata["audio_path_for_core"], str(retained))
 
+    def test_explicit_capture_start_overrides_filename_and_file_time(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            source = root / "2020-01-01_0000_old.wav"
+            source.write_bytes(b"audio")
+            start = datetime.fromisoformat("2026-11-12T15:00:00+08:00")
+            with patch.object(MODULE, "detect_recording_time", side_effect=AssertionError("must not infer")):
+                result = MODULE.prepare_recording(source, root / "records", recorded_at=start)
+            self.assertEqual(result["recorded_at"], "2026-11-12T15:00+08:00")
+            self.assertTrue(Path(result["meeting_dir"]).name.startswith("2026-11-12_1500_"))
+            self.assertEqual(result["date_source"], "capture start")
+
     def test_time_prompt_keeps_stdout_json_clean(self):
         """Shell captures organizer stdout as JSON; prompts must stay on stderr."""
         with tempfile.TemporaryDirectory() as temp:

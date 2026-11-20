@@ -190,6 +190,44 @@ YYYY-MM-DD_HHMM_<safe-stem>/
 
 按 `Ctrl+C` 停止錄音，腳本會接著執行轉錄。
 
+啟動時會顯示來源選單：**麥克風／系統音／系統音＋麥克風**；直接 Enter 採用
+`.env` 的 `RECORDING_SOURCE`（未設定則為 `mic`）。非互動執行直接使用此設定。
+來源由使用者決定，不依當下是否有聲音、是否戴耳機或會議是否開始自動判斷，也不會自動切換來源。
+可以提早開始錄，開頭的安靜會保留在會議時間軸。
+
+- `mic`：維持 FFmpeg AVFoundation 與 `MIC_DEVICE` 設定；戴耳機時不會直接錄到遠端聲音。
+- `system`：Swift／ScreenCaptureKit 錄整個系統輸出音（含其他 App 的通知或音樂），不安裝虛擬音效卡、不保存畫面。
+- `both`：同時錄系統音和麥克風，保留兩路原始 WAV，另產生混音主檔供現有 Whisper 流程使用。
+  麥克風預設使用 macOS 目前預設輸入；可用 `RECORDING_MIC_DEVICE_ID` 固定裝置，與 FFmpeg 的 `MIC_DEVICE=:0` 不同。
+
+原生錄音需 macOS 14+、Xcode Command Line Tools；首次或原始碼更新時自動建置到
+`.local/recorder/meeting-recorder`。也可以先執行：
+
+```bash
+bash scripts/build-recorder.sh
+.local/recorder/meeting-recorder --list-microphones
+```
+
+第一次選 `system`／`both` 時，請在「系統設定 → 隱私權與安全性 → 螢幕與系統錄音」
+允許啟動錄音的終端機／Meeting Recorder。這個權限用於音訊擷取，本工具不保存螢幕畫面。
+`both` 另需「麥克風」權限。授權後若仍失敗，退出並重新開啟終端機再試。
+拒絕權限或指定裝置不存在時會停止，不會偷偷改錄其他來源。建議首次先做短錄音並回聽。
+
+停止時會等工具關閉 WAV，再建立 workspace、保留 raw 並自動轉錄。
+新原生模式在停止後檢查整段實際 PCM：每路至少 0.1 秒、峰值至少 4/32768；
+不是要求開始時就有聲音。整路靜音、空檔或損壞時不啟動轉錄，保留暫存與 log。
+這是基本有效性檢查，不能保證人聲清晰或排除只有底噪；請回聽確認。
+若整場不打算說話，可選 `system`，避免 `both` 的麥克風全靜音檢查。
+
+兩路原始軌保存為 `<stem>_system.wav`、`<stem>_microphone.wav`，主檔為 `<stem>.wav`；
+`source_meta.json.recording` 記錄來源、軌道、音量統計與台北時區的開始時間。
+`RECORDING_SYSTEM_GAIN`、`RECORDING_MIC_GAIN` 是混音相對權重（預設各 1，範圍大於 0、至多 10），
+不修改原始軌；聽感不平衡時可調整。成功才刪除本次 `.incoming` 檔案，失敗則保留供重試。
+程序收到 SIGTERM 時 shell 只保留錄音，不啟動轉錄；強制關閉或斷電可能仍造成 WAV header 未完成。
+系統音不綁定耳機輸出裝置；若擷取錯誤或所選麥克風斷線，會提示並停止保留已錄內容。
+AirPods 切換、權限歸屬及長時間雙路同步仍需實機驗收，第一階段不提供 Desk 按鈕或音量表。
+
+
 麥克風擷取與 Ctrl+C 仍由 shell 負責；轉錄已委派給共用 `src.transcription` core。腳本現在先以 48 kHz（可由 `.env` 調整）錄製 raw PCM WAV，接著建立 timestamped meeting workspace，將 raw 音檔保留在 workspace，並由共用 core 產生 16 kHz mono normalized WAV、TXT、SRT 與 JSON。成功後只會清理本次執行的 `.incoming` 暫存副本；失敗時保留暫存音檔與 log 供重試。
 
 ### 轉錄既有本機音訊

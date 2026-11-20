@@ -136,14 +136,15 @@ def prepare_recording(
     records_dir: Path,
     assume_yes: bool = False,
     retain_source: bool = False,
+    recorded_at: datetime | None = None,
 ) -> dict[str, str]:
     audio_file = audio_file.expanduser().resolve()
     records_dir = records_dir.expanduser().resolve()
     if not audio_file.is_file():
         raise FileNotFoundError(f"Recording not found: {audio_file}")
 
-    detected = detect_recording_time(audio_file)
-    if detected.source != "filename" and not assume_yes:
+    detected = RecordingTime(recorded_at, "capture start", False) if recorded_at else detect_recording_time(audio_file)
+    if detected.source not in {"filename", "capture start"} and not assume_yes:
         detected = ask_for_recording_time(detected)
     elif detected.requires_confirmation and assume_yes:
         print(
@@ -236,6 +237,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("audio_file", type=Path)
     parser.add_argument("--records-dir", required=True, type=Path)
+    parser.add_argument("--recorded-at", type=datetime.fromisoformat, help="explicit capture start (ISO 8601)")
     parser.add_argument("--yes", action="store_true", help="accept detected time")
     parser.add_argument(
         "--retain-source",
@@ -249,6 +251,7 @@ def main() -> int:
             args.records_dir,
             args.yes,
             args.retain_source,
+            args.recorded_at,
         )
     except (OSError, ValueError, WorkspaceError) as exc:
         print(f"[!] {exc}", file=sys.stderr)
