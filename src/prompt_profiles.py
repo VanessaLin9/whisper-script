@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from src.platform_support import data_dir
+
 
 DEFAULT_PROMPT_PROFILES: dict[str, dict[str, str]] = {
     "inno": {
@@ -32,7 +34,7 @@ def default_prompt_notes_dir() -> Path:
     configured = os.getenv("PROMPT_NOTES_DIR")
     if configured:
         return Path(configured).expanduser().resolve()
-    return Path(__file__).resolve().parents[1] / ".local" / "prompt_notes"
+    return data_dir(Path(__file__).resolve().parents[1]) / "prompt_notes"
 
 
 def _front_matter(text: str) -> dict[str, str]:

@@ -46,3 +46,9 @@ bash tests/run_tests.sh
 ```
 
 Job 的欄位、路徑、hash、outbox result 與匯入限制，請看 [docs/llm-job-contract.md](docs/llm-job-contract.md)。
+
+## 平台相關層
+
+`src/platform_support.py` 集中處理作業系統判斷、預設路徑、`.desktop.lock` 檔案鎖、執行檔查找、剪貼簿與在資料夾中顯示。macOS／Linux 的預設會議根目錄是 `Path.home() / "MeetingRecords"`；Windows 的設定與資料預設分別位於 `%APPDATA%/WhisperScript` 與 `%LOCALAPPDATA%/WhisperScript`。
+
+環境變數優先順序如下：明確的 action／desktop settings 設定，其次是既有的 `MEETING_RECORDS_DIR`、`WHISPER_ROOT`、`PROMPT_NOTES_DIR` 或執行檔專用變數，最後才使用平台預設值。設定目錄可用 `WHISPER_SCRIPT_CONFIG_DIR` 覆寫，資料目錄可用 `WHISPER_SCRIPT_DATA_DIR` 覆寫。執行檔可用 `WHISPER_CLI`、`FFMPEG`、`FFPROBE` 覆寫。

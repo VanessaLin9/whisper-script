@@ -13,9 +13,12 @@ _KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 def expand_documented_vars(value: str) -> str:
-    """Expand only documented path forms: $HOME, ${HOME}, and leading ~."""
+    """Expand `$HOME`、`${HOME}`、Windows `%USERPROFILE%` 與開頭 `~`。"""
     home = str(Path.home())
     value = value.replace("${HOME}", home).replace("$HOME", home)
+    userprofile = os.getenv("USERPROFILE", home)
+    value = re.sub(r"%USERPROFILE%", lambda _: userprofile, value, flags=re.IGNORECASE)
+    value = re.sub(r"%HOME%", lambda _: home, value, flags=re.IGNORECASE)
     if value.startswith("~"):
         value = os.path.expanduser(value)
     return value

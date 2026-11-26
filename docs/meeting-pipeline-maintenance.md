@@ -7,8 +7,8 @@
 ### 1. Clone 專案
 
 ```bash
-git clone <repository-url> /Users/user/whisper-script
-cd /Users/user/whisper-script
+git clone <repository-url> <repo-root>
+cd <repo-root>
 ```
 
 ### 2. 建立本機設定

@@ -18,10 +18,11 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 from src.postprocessing.preparer import prepare_file
+from src.platform_support import default_meeting_root
 from src.prompt_profiles import PROMPT_PROFILES
 
 
-DEFAULT_MEETING_ROOT = Path("/Users/user/MeetingRecords")
+DEFAULT_MEETING_ROOT = default_meeting_root()
 FOLDER_PATTERN = re.compile(
     r"^(?P<date>\d{4}-\d{2}-\d{2})_(?P<time>\d{4})_(?P<id>[^/]+)$"
 )

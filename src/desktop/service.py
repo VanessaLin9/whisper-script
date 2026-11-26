@@ -5,7 +5,6 @@ rewritten. Each mutation holds a per-workspace flock, including transcription.
 """
 from __future__ import annotations
 
-import fcntl
 import hashlib
 import json
 import os
@@ -38,6 +37,7 @@ from src.desktop.jobs import (
 )
 from src.desktop.segments import SegmentationError, write_job_segments
 from src.output_manager import SourceDescriptor, SourceKind, create_workspace, plan_workspace
+from src.platform_support import default_meeting_root, file_lock, find_executable, config_dir
 from src.output_manager.workspace import exclusive_write_text
 from src.postprocessing.preparer import prepare_file
 from src.prompt_profiles import load_prompt_profiles
@@ -78,25 +78,18 @@ def atomic_json(path: Path, payload: dict) -> None:
 
 @contextmanager
 def meeting_lock(folder: Path):
-    with (folder / ".desktop.lock").open("a") as lock:
-        try:
-            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
-            raise ValueError("這場會議正在另一個視窗處理，請稍後再試。") from exc
-        try:
-            yield
-        finally:
-            fcntl.flock(lock, fcntl.LOCK_UN)
+    with file_lock(folder / ".desktop.lock"):
+        yield
 
 
 class DesktopService:
     def __init__(self, repo: Path = REPO, settings: dict | None = None):
         self.repo = repo
         env = load_env(repo / ".env") if (repo / ".env").exists() else {}
-        self.settings_path = repo / ".local" / "desktop_settings.json"
+        self.settings_path = config_dir(repo) / "desktop_settings.json"
         whisper_root = Path(env.get("WHISPER_ROOT", str(Path.home() / "whisper.cpp")))
         self.settings = {
-            "output_root": env.get("MEETING_RECORDS_DIR", str(Path.home() / "MeetingRecords")),
+            "output_root": env.get("MEETING_RECORDS_DIR", str(default_meeting_root())),
             "whisper_root": str(whisper_root), "model": "medium", "language": "zh",
             "threads": int(env.get("THREADS", os.cpu_count() or 4)),
         }
@@ -110,14 +103,21 @@ class DesktopService:
 
     def environment(self) -> dict:
         root = Path(self.settings["whisper_root"]).expanduser()
+        whisper_cli = self._executable("whisper-cli", root=root)
         checks = [
-            {"name": "Whisper 執行檔", "ok": os.access(root / "build/bin/whisper-cli", os.X_OK)},
+            {"name": "Whisper 執行檔", "ok": whisper_cli is not None and (os.name == "nt" or os.access(whisper_cli, os.X_OK))},
             {"name": f"{self.settings['model']} 多語言模型", "ok": (root / f"models/ggml-{self.settings['model']}.bin").is_file()},
-            {"name": "FFmpeg", "ok": bool(shutil.which("ffmpeg"))},
+            {"name": "FFmpeg", "ok": self._executable("ffmpeg") is not None},
         ]
         profiles = [{"key": key, "label": value["label"], "available": bool(value.get("local_path"))}
                     for key, value in load_prompt_profiles().items() if key != "new"]
         return {"settings": self.settings, "checks": checks, "profiles": profiles}
+
+    def _executable(self, name: str, *, root: Path | None = None) -> Path | None:
+        try:
+            return find_executable(name, settings=self.settings, whisper_root=root or self.settings["whisper_root"])
+        except FileNotFoundError:
+            return None
 
     def save_settings(self, values: dict) -> dict:
         if values.get("model") not in {"tiny", "base", "small", "medium", "large-v3"}:
@@ -447,7 +447,7 @@ class DesktopService:
         source = "檔名" if date else "檔案時間（請確認是否為錄音時間）"
         if date is None:
             try:
-                result = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format_tags=creation_time",
+                result = subprocess.run([str(find_executable("ffprobe", settings=self.settings)), "-v", "error", "-show_entries", "format_tags=creation_time",
                                          "-of", "json", str(path)], capture_output=True, text=True, timeout=8, check=True)
                 value = json.loads(result.stdout).get("format", {}).get("tags", {}).get("creation_time")
                 if value:
@@ -505,9 +505,10 @@ class DesktopService:
                         raise ValueError("缺少：" + "、".join(missing) + "。請到設定確認路徑與模型。")
                     meta = read_json(folder / "source_meta.json")
                     root = Path(self.settings["whisper_root"]).expanduser()
+                    whisper_cli = find_executable("whisper-cli", settings=self.settings, whisper_root=root)
                     transcribe(TranscribeRequest(
                         audio_path=Path(meta["audio_path_for_core"]), language="zh", model=self.settings["model"],
-                        model_path=root / f"models/ggml-{self.settings['model']}.bin", whisper_cli=root / "build/bin/whisper-cli",
+                        model_path=root / f"models/ggml-{self.settings['model']}.bin", whisper_cli=whisper_cli,
                         threads=int(self.settings["threads"]), output_dir=folder, stem=meta["safe_stem"],
                         outputs=frozenset({ArtifactKind.TXT, ArtifactKind.SRT, ArtifactKind.JSON}),
                     ), cancellation=cancellation,
