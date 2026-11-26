@@ -8,6 +8,7 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
 from env_loader import load_env, validate_model_language
+from src.platform_support import find_executable, whisper_cli_candidates
 
 # -------- folder helpers --------
 def ensure_dir(p: Path):
@@ -79,7 +80,8 @@ def ensure_whisper_cpp(whisper_root: Path) -> Path:
     print(f"✅ whisper.cpp directory complete")
     
     # 3. Check if already compiled
-    whisper_cli = whisper_root / "build" / "bin" / "whisper-cli"
+    candidates = whisper_cli_candidates(whisper_root)
+    whisper_cli = next((path for path in candidates if path.is_file()), candidates[0])
     
     if not whisper_cli.exists():
         print(f"🔨 Starting whisper.cpp compilation...")
@@ -112,7 +114,7 @@ def ensure_whisper_cpp(whisper_root: Path) -> Path:
     else:
         print(f"✅ whisper-cli already compiled")
     
-    return whisper_cli
+    return find_executable("whisper-cli", whisper_root=whisper_root)
 
 
 def ensure_model(whisper_root: Path, model_name: str) -> Path:
@@ -216,12 +218,7 @@ def check_environment(
         ("cmake", which("cmake")),
         ("ffmpeg", which("ffmpeg")),
         ("whisper.cpp", whisper_root if (whisper_root / "CMakeLists.txt").is_file() else None),
-        (
-            "whisper-cli",
-            whisper_root / "build" / "bin" / "whisper-cli"
-            if (whisper_root / "build" / "bin" / "whisper-cli").is_file()
-            else None,
-        ),
+        ("whisper-cli", next((path for path in whisper_cli_candidates(whisper_root) if path.is_file()), None)),
     ]
 
     missing_models: list[tuple[str, Path]] = []

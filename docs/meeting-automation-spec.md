@@ -21,7 +21,7 @@ The design deliberately separates mechanical file operations from semantic judgm
 
 ### In scope
 
-- Local workspace discovery under `/Users/user/MeetingRecords`.
+- Local workspace discovery under `$HOME/MeetingRecords`（可由 `MEETING_RECORDS_DIR` 覆寫）。
 - A required meeting selection step.
 - A required prompt-profile selection step.
 - A selectable workflow mode (`full`, `preclean`, `handoff`).
@@ -44,7 +44,7 @@ The design deliberately separates mechanical file operations from semantic judgm
 
 ### Existing local components
 
-- Repository: `/Users/user/whisper-script`
+- Repository: `<repo-root>`
 - Current controller: `src/meeting_pipeline.py`
 - Deterministic pre-cleaner: `src/postprocessing/preparer.py`
 - Recording script: `scripts/record-meeting.sh`

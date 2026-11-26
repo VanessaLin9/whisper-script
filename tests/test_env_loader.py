@@ -5,7 +5,9 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 from env_loader import expand_documented_vars, load_env, validate_model_language
 
@@ -56,6 +58,13 @@ class EnvLoaderTests(unittest.TestCase):
 
             self.assertEqual(env["MEETING_RECORDS_DIR"], f"{home}/Meeting Records")
             self.assertEqual(env["TRANSCRIPTS_DIR"], f"{home}/MeetingRecords/Transcripts")
+
+    def test_windows_userprofile_expansion(self) -> None:
+        with patch.dict(os.environ, {"USERPROFILE": r"C:\Users\Vanessa"}):
+            self.assertEqual(
+                expand_documented_vars(r"%USERPROFILE%\MeetingRecords"),
+                r"C:\Users\Vanessa\MeetingRecords",
+            )
 
     def test_does_not_expand_arbitrary_shell_fragments(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

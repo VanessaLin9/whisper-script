@@ -70,7 +70,7 @@ cp .env.example .env
 編輯 `.env`，確認 `WHISPER_ROOT` 指向剛才 clone 的 whisper.cpp：
 
 ```bash
-WHISPER_ROOT=/Users/你的帳號/whisper.cpp
+WHISPER_ROOT=$HOME/whisper.cpp
 ```
 
 `.env` 只供本機使用，已被 Git 忽略，不應 commit。
@@ -120,7 +120,7 @@ python3 setup.py check
 
 ```bash
 # 必填：whisper.cpp clone 的位置
-WHISPER_ROOT=/Users/YourName/whisper.cpp
+WHISPER_ROOT=$HOME/whisper.cpp
 
 # 輸出目錄
 MEETING_RECORDS_DIR=$HOME/MeetingRecords
@@ -459,6 +459,19 @@ whisper-script/
     └── postprocessing/
         └── cleaner.py
 ```
+
+## 平台相關設定
+
+Python 平台邊界集中在 `src/platform_support.py`，包含跨平台檔案鎖、預設路徑、執行檔查找、剪貼簿與檔案管理器指令。macOS 的 `desktop_settings.json` 與提示詞筆記預設仍位於 repo 的 `.local/`；Windows 預設分別使用 `%APPDATA%/WhisperScript` 與 `%LOCALAPPDATA%/WhisperScript`。
+
+可用環境變數如下：
+
+- `WHISPER_SCRIPT_CONFIG_DIR`：覆寫 desktop 設定目錄。
+- `WHISPER_SCRIPT_DATA_DIR`：覆寫平台資料目錄（包含 `prompt_notes`）。
+- `MEETING_RECORDS_DIR`、`WHISPER_ROOT`、`PROMPT_NOTES_DIR`：既有設定，維持優先使用。
+- `WHISPER_CLI`、`FFMPEG`、`FFPROBE`：明確指定執行檔路徑。
+
+執行檔查找順序是明確設定、`PATH`、既有預設位置；Windows 會額外查找 `whisper-cli.exe` 與 `build/bin/Release/whisper-cli.exe`。Windows 剪貼簿使用 `clip` 並以 UTF-16LE 傳送文字；顯示檔案使用 `explorer /select,`。
 
 ## License
 

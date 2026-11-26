@@ -12,6 +12,8 @@ from pathlib import Path
 from typing import List, Dict, Tuple
 from dataclasses import dataclass, asdict
 
+from src.platform_support import find_executable
+
 try:
     from dotenv import load_dotenv
     load_dotenv()
@@ -40,7 +42,7 @@ class AudioSegment:
 def check_ffmpeg() -> bool:
     """Check if ffmpeg is available"""
     try:
-        subprocess.run(["ffmpeg", "-version"], 
+        subprocess.run([str(find_executable("ffmpeg")), "-version"],
                       capture_output=True, check=True)
         return True
     except (subprocess.CalledProcessError, FileNotFoundError):
@@ -64,7 +66,7 @@ def detect_silences(
         List of SilenceSegment objects
     """
     cmd = [
-        "ffmpeg",
+        str(find_executable("ffmpeg")),
         "-i", str(audio_file),
         "-af", f"silencedetect=noise={noise_threshold_db}dB:d={min_silence_duration}",
         "-f", "null",
@@ -111,7 +113,7 @@ def detect_silences(
 def get_audio_duration(audio_file: Path) -> float:
     """Get total duration of audio file in seconds"""
     cmd = [
-        "ffprobe",
+        str(find_executable("ffprobe")),
         "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
@@ -187,7 +189,7 @@ def calculate_segment_silence_ratio(
     Used to filter out segments that are almost entirely silent
     """
     cmd = [
-        "ffmpeg",
+        str(find_executable("ffmpeg")),
         "-ss", str(start_time),
         "-t", str(duration),
         "-i", str(audio_file),
@@ -227,7 +229,7 @@ def split_audio_segment(
         True if successful
     """
     cmd = [
-        "ffmpeg",
+        str(find_executable("ffmpeg")),
         "-i", str(input_file),
         "-ss", str(start_time),
         "-t", str(duration),
