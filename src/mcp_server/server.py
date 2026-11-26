@@ -5,7 +5,21 @@ import json
 import sys
 
 from src.desktop.service import DesktopService, dispatch
-from .registry import action_tool_specs, validate_arguments
+from .registry import ALLOWED_ACTIONS, action_tool_specs, validate_arguments
+
+
+def _filter_help_result(result: dict, requested_name: str | None) -> dict:
+    """Restrict the CLI help payload to actions exposed through MCP."""
+    if requested_name is not None:
+        if requested_name not in ALLOWED_ACTIONS:
+            raise ValueError(f"不允許透過 MCP 查詢的 action：{requested_name}。")
+        return result
+
+    allowed = set(ALLOWED_ACTIONS)
+    return {
+        **result,
+        "actions": [action for action in result["actions"] if action["name"] in allowed],
+    }
 
 
 def create_server():
@@ -39,8 +53,12 @@ def create_server():
             if isinstance(arguments, dict) and "action" in arguments:
                 raise ValueError("arguments 不得包含 action；工具名稱會決定 action。")
             validate_arguments(spec["inputSchema"], arguments)
+            if params.name == "help" and arguments.get("name") is not None:
+                _filter_help_result({}, arguments["name"])
             # Construct per call so Desk setting changes are observed immediately.
             result = dispatch(DesktopService(), {"action": params.name, **arguments})
+            if params.name == "help":
+                result = _filter_help_result(result, arguments.get("name"))
         except Exception as exc:
             return types.CallToolResult(
                 content=[types.TextContent(type="text", text=str(exc))], isError=True,

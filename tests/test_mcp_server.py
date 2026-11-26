@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from src.desktop.service import ACTION_REGISTRY
+from src.desktop.service import ACTION_REGISTRY, action_help, dispatch
 from src.mcp_server.registry import (
     ALLOWED_ACTIONS, action_tool_specs, schema_for_action, validate_arguments,
 )
@@ -69,6 +69,17 @@ class MCPRegistryTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_arguments(schema, {"action": "settings"})
 
+    def test_cli_help_remains_complete(self):
+        expected = [action["name"] for action in ACTION_REGISTRY]
+        self.assertEqual(len(expected), 16)
+        self.assertEqual([action["name"] for action in action_help()["actions"]], expected)
+        self.assertEqual(
+            [action["name"] for action in dispatch(object(), {"action": "help"})["actions"]],
+            expected,
+        )
+        for name in {"review", "settings", "rename", "save_edit", "import", "process", "inspect"}:
+            self.assertIn(name, expected)
+
 
 class MCPSDKTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self):
@@ -122,10 +133,33 @@ class MCPSDKTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(names, list(ALLOWED_ACTIONS))
             help_result = await session.call_tool("help", {})
             self.assertFalse(help_result.is_error)
-            self.assertIn('"actions"', help_result.content[0].text)
+            self.assertEqual(
+                [action["name"] for action in help_result.structured_content["actions"]],
+                [action["name"] for action in ACTION_REGISTRY if action["name"] in ALLOWED_ACTIONS],
+            )
+            for name in {"review", "settings", "rename", "save_edit", "import", "process", "inspect"}:
+                self.assertNotIn(name, [
+                    action["name"] for action in help_result.structured_content["actions"]
+                ])
             jobs = await session.call_tool("list_jobs", {})
             self.assertFalse(jobs.is_error)
             self.assertEqual(jobs.structured_content["jobs"], [])
+        finally:
+            await session.__aexit__(None, None, None)
+            await transport.__aexit__(None, None, None)
+
+    async def test_help_rejects_unexposed_action_names(self):
+        transport, session = await self._session()
+        try:
+            with patch("src.mcp_server.server.dispatch") as dispatch_mock:
+                for name in ("review", "settings"):
+                    result = await session.call_tool("help", {"name": name})
+                    self.assertTrue(result.is_error, name)
+                dispatch_mock.assert_not_called()
+
+            result = await session.call_tool("help", {"name": "list_jobs"})
+            self.assertFalse(result.is_error, result.content[0].text)
+            self.assertEqual(result.structured_content["name"], "list_jobs")
         finally:
             await session.__aexit__(None, None, None)
             await transport.__aexit__(None, None, None)

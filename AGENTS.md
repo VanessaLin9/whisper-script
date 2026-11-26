@@ -43,15 +43,15 @@ python3 -m venv .venv
 .venv/bin/python -m src.mcp_server
 ```
 
-Cursor `mcp.json` 範例（將 `/絕對路徑/whisper-script-mcp` 換成 repo 路徑）：
+Cursor `mcp.json` 範例（將 `/絕對路徑/whisper-script` 換成 repo 路徑）：
 
 ```json
 {
   "mcpServers": {
     "meeting-desk": {
-      "command": "/絕對路徑/whisper-script-mcp/.venv/bin/python",
+      "command": "/絕對路徑/whisper-script/.venv/bin/python",
       "args": ["-m", "src.mcp_server"],
-      "cwd": "/絕對路徑/whisper-script-mcp"
+      "cwd": "/絕對路徑/whisper-script"
     }
   }
 }
@@ -61,12 +61,12 @@ Codex `~/.codex/config.toml` 可使用：
 
 ```toml
 [mcp_servers.meeting-desk]
-command = "/絕對路徑/whisper-script-mcp/.venv/bin/python"
+command = "/絕對路徑/whisper-script/.venv/bin/python"
 args = ["-m", "src.mcp_server"]
-cwd = "/絕對路徑/whisper-script-mcp"
+cwd = "/絕對路徑/whisper-script"
 ```
 
-Windows 對應寫法：`command = "C:\\絕對路徑\\whisper-script-mcp\\.venv\\Scripts\\python.exe"`，`args = ["-m", "src.mcp_server"]`，並將 `cwd` 設為 repo 絕對路徑。
+Windows 對應寫法：`command = "C:\\絕對路徑\\whisper-script\\.venv\\Scripts\\python.exe"`，`args = ["-m", "src.mcp_server"]`，並將 `cwd` 設為 repo 絕對路徑。
 
 開放工具為 `help`、`environment`、`list`、`list_jobs`、`preview`（唯讀），以及 `handoff`、`import_cleaned`、`import_job`、`import_notes`（交接用寫入）。`review` 保留給 Vanessa 的人工關卡；`settings`、`rename`、`save_edit`、`import`、`process`、`inspect` 不開放，以避免 MCP 直接改設定、人工內容或啟動長任務。寫入 Notion 不是 MCP 工具，仍須人同意。
 
