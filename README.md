@@ -6,6 +6,8 @@
 
 ## 本機 GUI：Meeting Desk
 
+若要把 Meeting Desk action 供本機 agent 使用，請參考 [AGENTS.md 的 MCP server 說明](AGENTS.md#mcp-server)；MCP server 是選用依賴，不影響 CLI 與 GUI。
+
 在 Finder 雙擊根目錄的 **`開啟 Meeting Desk.command`**。第一次會以系統 Swift 編譯原生 App；後續直接啟動。需要 macOS 14+、Xcode Command Line Tools、Python 3.10+，以及原有 FFmpeg / whisper.cpp 環境，不需額外 Python GUI 套件。
 
 1. 從語音備忘錄拖出音檔，再拖進 App（或按「匯入音檔」選檔）。不必先放到 `Transcripts`。

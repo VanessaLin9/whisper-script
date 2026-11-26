@@ -33,6 +33,45 @@ Desk 依下列順序決定根目錄，前者存在設定時優先：
 4. 人工檢查清洗稿後呼叫 `review`。這是人工關卡，會自動建立 notes job。
 5. agent 完成 notes job 後呼叫 `import_notes`；寫入 Notion 仍必須取得人同意，本 repo 不會自動發布。
 
+## MCP server
+
+Meeting Desk 另提供選用的本機 MCP stdio server。建議使用虛擬環境安裝依賴：
+
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-mcp.txt
+.venv/bin/python -m src.mcp_server
+```
+
+Cursor `mcp.json` 範例（將 `/絕對路徑/whisper-script-mcp` 換成 repo 路徑）：
+
+```json
+{
+  "mcpServers": {
+    "meeting-desk": {
+      "command": "/絕對路徑/whisper-script-mcp/.venv/bin/python",
+      "args": ["-m", "src.mcp_server"],
+      "cwd": "/絕對路徑/whisper-script-mcp"
+    }
+  }
+}
+```
+
+Codex `~/.codex/config.toml` 可使用：
+
+```toml
+[mcp_servers.meeting-desk]
+command = "/絕對路徑/whisper-script-mcp/.venv/bin/python"
+args = ["-m", "src.mcp_server"]
+cwd = "/絕對路徑/whisper-script-mcp"
+```
+
+Windows 對應寫法：`command = "C:\\絕對路徑\\whisper-script-mcp\\.venv\\Scripts\\python.exe"`，`args = ["-m", "src.mcp_server"]`，並將 `cwd` 設為 repo 絕對路徑。
+
+開放工具為 `help`、`environment`、`list`、`list_jobs`、`preview`（唯讀），以及 `handoff`、`import_cleaned`、`import_job`、`import_notes`（交接用寫入）。`review` 保留給 Vanessa 的人工關卡；`settings`、`rename`、`save_edit`、`import`、`process`、`inspect` 不開放，以避免 MCP 直接改設定、人工內容或啟動長任務。寫入 Notion 不是 MCP 工具，仍須人同意。
+
+換電腦時重新 clone repo、建立 venv、安裝 `requirements-mcp.txt`，確認 Meeting Desk 的環境與本機提示詞設定，再把上述範例中的絕對路徑改成新電腦路徑；不要搬移或提交 `.env`、`.local/` 或 `~/.codex` 設定。
+
 ### Agent 不得動的檔案
 
 Agent 不得修改 inbox request、`desktop_state.json`、raw、prepared、SRT 或音訊。也不要直接覆寫 cleaned；清洗結果必須依 job 契約寫入 outbox，再由 Desk 驗證匯入。不要把逐字稿內容放進 job JSON 或聊天交接。
