@@ -5,6 +5,7 @@ import json
 import tempfile
 import threading
 import unittest
+import types
 from pathlib import Path
 from unittest.mock import patch
 
@@ -172,6 +173,62 @@ class WebUITests(unittest.TestCase):
             self.assertNotIn('shell=True',value)
             self.assertNotIn('bash',value.lower())
             self.assertNotIn('subprocess',value)
+
+    def test_static_files_use_local_resources_and_page_dialogs(self):
+        source = Path(__file__).resolve().parents[1] / 'src' / 'web_ui' / 'static'
+        for path in source.iterdir():
+            value = path.read_text(encoding='utf-8')
+            for forbidden in ('prompt(', 'confirm(', 'alert(', 'http://', 'https://'):
+                self.assertNotIn(forbidden, value, f'{path.name}: {forbidden}')
+        html = (source / 'index.html').read_text(encoding='utf-8')
+        self.assertIn('<dialog id="confirmDialog"', html)
+        self.assertIn('id="jobsToggle"', html)
+        self.assertIn('id="meetingSearch"', html)
+
+    def test_webview_is_optional_only(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertIn('pywebview', (root / 'requirements-webview.txt').read_text())
+        for path in [root / 'setup.py', *root.glob('requirements*.txt')]:
+            if path.name == 'requirements-webview.txt':
+                continue
+            self.assertNotIn('pywebview', path.read_text(encoding='utf-8'))
+
+    def test_app_window_uses_token_url_and_stops_server(self):
+        from src.web_ui import __main__ as entry
+        calls = []
+        class FakeServer:
+            url = 'http://127.0.0.1:7777/?token=temporary-session'
+            def __init__(self, port=8765):
+                calls.append(('server',port))
+            def serve_forever(self):
+                calls.append(('serve',))
+            def shutdown(self):
+                calls.append(('shutdown',))
+            def server_close(self):
+                calls.append(('close',))
+        fake_webview = types.SimpleNamespace(
+            create_window=lambda *args, **kwargs: calls.append(('window',args,kwargs)),
+            start=lambda: calls.append(('start',)))
+        with patch.dict('sys.modules', {'webview':fake_webview}), \
+             patch.object(entry, 'WebServer', FakeServer), \
+             patch.object(entry.webbrowser, 'open') as browser:
+            self.assertEqual(entry.main(['--app']), 0)
+        browser.assert_not_called()
+        window = next(item for item in calls if item[0] == 'window')
+        self.assertEqual(window[1][:2], ('Meeting Desk', FakeServer.url))
+        self.assertIn(('shutdown',), calls)
+        self.assertIn(('close',), calls)
+        self.assertLess(calls.index(('start',)), calls.index(('shutdown',)))
+
+    def test_missing_webview_reports_traditional_chinese_error(self):
+        from src.web_ui import __main__ as entry
+        with patch.dict('sys.modules', {'webview':None}), \
+             patch.object(entry, 'WebServer') as server, \
+             patch('sys.stderr', new_callable=io.StringIO) as output:
+            self.assertNotEqual(entry.main(['--app']), 0)
+        server.assert_not_called()
+        self.assertIn('requirements-webview.txt', output.getvalue())
+        self.assertIn('瀏覽器模式', output.getvalue())
 
 
 if __name__ == '__main__':

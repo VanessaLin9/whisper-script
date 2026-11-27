@@ -1,18 +1,48 @@
 <!doctype html>
 <html lang="zh-Hant">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Meeting Desk 本機介面</title><link rel="stylesheet" href="/style.css" defer></head>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Meeting Desk</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
 <body>
-<header><h1>Meeting Desk</h1><span>本機會議工作台</span><nav><button id="tabMeet">會議</button><button id="tabJobs">LLM 工作</button><button id="tabSettings">環境與設定</button></nav></header>
-<p id="notice" role="status"></p>
-<main>
-<section id="meetView">
-  <aside><div class="row"><h2>會議</h2><button id="refresh">重新整理</button></div><div id="meetings"></div></aside>
-  <article>
-    <section class="panel"><h2>匯入音檔</h2><label>本機音檔絕對路徑 <input id="audioPath" placeholder="C:\Users\…\recording.m4a"></label><button id="inspect">檢查音檔</button><div id="importDraft" hidden><p id="resolvedPath"></p><label>會議名稱 <input id="importTitle"></label><label>錄音時間（臺北時間，YYYY-MM-DD HH:MM） <input id="importTime"></label><button id="importAudio">確認匯入</button></div></section>
-    <section id="detail" class="panel" hidden><div class="row"><h2 id="meetingTitle"></h2><button id="rename">改名稱</button></div><p id="meetingStatus"></p><div class="actions"><button id="process">轉錄並整理</button><button id="cancelProcess" hidden>取消轉錄</button><label>提示詞 <select id="profile"></select></label><button id="handoffClean">建立清洗工作</button><button id="importJob">匯入工作結果</button><label>清洗稿 TXT 路徑 <input id="cleanedPath"></label><button id="importCleaned">匯入清洗稿</button><button id="review">已檢查，確認清洗稿</button><button id="handoffNotes">建立會議記錄工作</button><button id="importNotes">匯入會議記錄</button></div><p id="progress" role="status"></p>
-    <div class="row"><label>稿件 <select id="kind"><option value="raw">原始稿</option><option value="prepared">預清洗稿</option><option value="corrected">人工訂正</option><option value="cleaned">清洗稿</option><option value="srt">時間軸字幕</option></select></label><button id="loadPreview">載入稿件</button><button id="edit">編輯文字</button></div><p id="previewPath"></p><pre id="preview"></pre><div id="editor" hidden><p id="editHelp"></p><div id="editFields"></div><button id="saveEdit">確認儲存訂正</button><button id="discardEdit">放棄修改</button></div></section>
-  </article>
-</section>
-<section id="jobsView" class="panel" hidden><div class="row"><h2>LLM 工作</h2><label><input type="checkbox" id="archive">包含封存</label><button id="refreshJobs">重新整理</button></div><p>此處只顯示工作狀態；請依交接路徑讓 agent 完成 outbox 結果。</p><div id="jobs"></div></section>
-<section id="settingsView" class="panel" hidden><h2>環境與設定</h2><div id="checks"></div><label>會議資料根目錄 <input id="outputRoot"></label><label>whisper.cpp 路徑 <input id="whisperRoot"></label><label>模型 <select id="model"><option value="tiny">tiny</option><option value="base">base</option><option value="small">small</option><option value="medium">medium</option><option value="large-v3">large-v3</option></select></label><label>執行緒 <input type="number" min="1" max="256" id="threads"></label><button id="saveSettings">確認儲存設定</button></section>
-</main><script src="/app.js" defer></script></body></html>
+<div class="shell">
+  <aside class="sidebar" aria-label="側邊欄">
+    <div class="brand"><span class="brand-mark" aria-hidden="true">◉</span><div><strong>Meeting Desk</strong><small>本機會議工作台</small></div></div>
+    <div class="sidebar-heading"><div><span class="eyebrow">資料庫</span><h2>會議 <span id="meetingCount" class="count">0</span></h2></div><button id="refresh" class="icon-button" type="button" title="重新整理會議" aria-label="重新整理會議">↻</button></div>
+    <label class="search-label"><span class="sr-only">搜尋會議</span><input id="meetingSearch" type="search" placeholder="搜尋會議名稱或日期"></label>
+    <nav id="meetings" class="meeting-list" aria-label="會議清單"></nav>
+    <div class="sidebar-bottom">
+      <section class="jobs-section" aria-label="LLM 工作">
+        <button id="jobsToggle" class="sidebar-action" type="button" aria-expanded="false" aria-controls="jobsPanel"><span>✧　LLM 工作</span><span id="jobCount" class="count">0</span></button>
+        <div id="jobsPanel" hidden><div class="jobs-toolbar"><label><input type="checkbox" id="archive"> 包含封存</label><button id="refreshJobs" class="text-button" type="button">重新整理</button></div><div id="jobs"></div></div>
+      </section>
+      <button id="settingsButton" class="sidebar-action" type="button">⚙　環境與設定</button>
+      <p class="local-note">資料只保存在這台電腦</p>
+    </div>
+  </aside>
+  <main class="workspace">
+    <header class="topbar"><div><span class="eyebrow">工作台</span><h1>會議整理</h1></div><button id="openImport" class="button primary" type="button">＋ 匯入音檔</button></header>
+    <div id="notice" class="notice" role="status" hidden><span id="noticeText"></span><button id="closeNotice" type="button" aria-label="關閉通知">×</button></div>
+    <section id="welcome" class="welcome"><div class="welcome-icon" aria-hidden="true">◉</div><span class="eyebrow">從一段錄音開始</span><h2>把錄音帶進來，從這裡開始。</h2><p>輸入本機音檔的絕對路徑，Meeting Desk 會保存原始錄音，接著帶你完成轉錄、清洗與內容確認。</p><button id="welcomeImport" class="button primary" type="button">匯入第一段錄音</button><div class="welcome-points"><span>✓ 保留原始錄音</span><span>✓ 中斷後可續跑</span><span>✓ LLM 工作交接</span></div></section>
+    <section id="detail" class="detail" hidden>
+      <div class="detail-heading"><div><span class="eyebrow">會議詳情</span><div class="title-line"><h2 id="meetingTitle"></h2><button id="rename" class="icon-button" type="button" title="修改會議名稱" aria-label="修改會議名稱">✎</button></div><p id="meetingStatus" class="muted"></p></div><button id="showFolder" class="button subtle" type="button">資料夾位置 ↗</button></div>
+      <div id="meetingError" class="inline-error" hidden></div>
+      <ol class="steps" aria-label="處理進度"><li id="step1"><span>01</span><strong>保存音檔</strong></li><li id="step2"><span>02</span><strong>轉錄與預清洗</strong></li><li id="step3"><span>03</span><strong>LLM 清洗</strong></li><li id="step4"><span>04</span><strong>內容確認</strong></li></ol>
+      <section class="card action-card"><div class="section-title"><div><span class="eyebrow">下一步</span><h3>處理這場會議</h3></div></div><div class="action-layout"><div class="action-main"><button id="process" class="button primary" type="button">轉錄並整理</button><div id="cleanActions" hidden><div class="profile-row"><label for="profile">清洗提示詞</label><select id="profile"></select></div><button id="handoffClean" class="button primary" type="button">清洗</button><button id="importJob" class="button secondary" type="button">匯入清洗稿</button><button id="importCleaned" class="button secondary" type="button">重新檢查清洗稿</button><button id="review" class="button primary" type="button">已檢查，確認清洗稿</button><span id="reviewedBadge" class="reviewed-badge" hidden>✓ 內容已由你確認</span><button id="handoffNotes" class="button secondary" type="button">準備會議記錄交接</button><button id="importNotes" class="button secondary" type="button">匯入會議記錄</button></div></div><p id="actionHint" class="action-hint"></p></div></section>
+      <section class="card transcript-card"><div class="section-title"><div><span class="eyebrow">稿件</span><h3>內容預覽</h3></div><button id="edit" class="button subtle" type="button">編輯文字</button></div><div id="kinds" class="segments" role="tablist" aria-label="稿件分段"><button data-kind="raw" type="button" role="tab">原始稿</button><button data-kind="prepared" type="button" role="tab">預清洗稿</button><button data-kind="corrected" type="button" role="tab">人工訂正</button><button data-kind="cleaned" type="button" role="tab">清洗稿</button><button data-kind="srt" type="button" role="tab">時間軸</button></div><p id="previewPath" class="path-line"></p><div id="preview" class="preview" role="tabpanel">選擇稿件以預覽內容。</div></section>
+    </section>
+    <div id="progressBar" class="progress-bar" role="status" hidden><div class="progress-pulse"></div><span id="progress">準備轉錄…</span><button id="cancelProcess" class="button danger" type="button">取消轉錄</button></div>
+  </main>
+</div>
+<dialog id="importDialog" class="dialog"><form method="dialog"><div class="dialog-heading"><div><span class="eyebrow">新增會議</span><h2>匯入音檔</h2></div><button class="dialog-close icon-button" value="cancel" aria-label="關閉">×</button></div><p class="muted">請輸入這台電腦上的音檔絕對路徑。音檔不會經由瀏覽器上傳。</p><label>本機音檔絕對路徑<input id="audioPath" placeholder="C:\Users\…\recording.m4a"></label><button id="inspect" class="button secondary" type="button">檢查音檔</button><div id="importDraft" hidden><p id="resolvedPath" class="path-line"></p><label>會議名稱<input id="importTitle"></label><label>錄音時間（臺北時間，YYYY-MM-DD HH:MM）<input id="importTime"></label><button id="importAudio" class="button primary" type="button">確認匯入</button></div></form></dialog>
+<dialog id="renameDialog" class="dialog"><form method="dialog"><div class="dialog-heading"><h2>修改會議名稱</h2><button class="dialog-close icon-button" value="cancel" aria-label="關閉">×</button></div><label>新名稱<input id="renameTitle"></label><div class="dialog-actions"><button class="button subtle" value="cancel">取消</button><button id="saveRename" class="button primary" type="button">儲存名稱</button></div></form></dialog>
+<dialog id="settingsDialog" class="dialog wide"><form method="dialog"><div class="dialog-heading"><div><span class="eyebrow">本機環境</span><h2>環境與設定</h2></div><button class="dialog-close icon-button" value="cancel" aria-label="關閉">×</button></div><div id="checks" class="checks"></div><label>會議資料根目錄<input id="outputRoot"></label><label>whisper.cpp 路徑<input id="whisperRoot"></label><div class="form-grid"><label>模型<select id="model"><option value="tiny">tiny</option><option value="base">base</option><option value="small">small</option><option value="medium">medium</option><option value="large-v3">large-v3</option></select></label><label>執行緒<input type="number" min="1" max="256" id="threads"></label></div><div class="dialog-actions"><button class="button subtle" value="cancel">取消</button><button id="saveSettings" class="button primary" type="button">儲存設定</button></div></form></dialog>
+<dialog id="editDialog" class="dialog editor-dialog"><form method="dialog"><div class="dialog-heading"><div><span class="eyebrow">人工訂正</span><h2>編輯稿件</h2></div><button class="dialog-close icon-button" value="cancel" aria-label="關閉">×</button></div><p id="editHelp" class="muted"></p><div id="editFields"></div><div class="dialog-actions"><span id="wordCount" class="muted"></span><button class="button subtle" value="cancel">放棄修改</button><button id="saveEdit" class="button primary" type="button">確認儲存訂正</button></div></form></dialog>
+<dialog id="confirmDialog" class="dialog"><div class="dialog-heading"><h2 id="confirmTitle">確認操作</h2><button id="confirmClose" class="icon-button" type="button" aria-label="關閉">×</button></div><p id="confirmMessage"></p><div class="dialog-actions"><button id="confirmCancel" class="button subtle" type="button">取消</button><button id="confirmYes" class="button primary" type="button">確認</button></div></dialog>
+<dialog id="pathDialog" class="dialog"><div class="dialog-heading"><h2>資料夾位置</h2><button class="dialog-close icon-button" type="button" data-close="pathDialog" aria-label="關閉">×</button></div><p class="muted">在檔案管理員貼上這個路徑，即可開啟會議資料夾。</p><p id="folderPath" class="path-box"></p><div class="dialog-actions"><button id="copyFolder" class="button primary" type="button">複製路徑</button></div></dialog>
+<dialog id="cleanedDialog" class="dialog"><div class="dialog-heading"><h2>重新檢查清洗稿</h2><button class="dialog-close icon-button" type="button" data-close="cleanedDialog" aria-label="關閉">×</button></div><p class="muted">輸入要重新匯入的清洗稿 TXT 絕對路徑。匯入後需要重新確認內容。</p><label>清洗稿 TXT 路徑<input id="cleanedPath"></label><div class="dialog-actions"><button id="submitCleaned" class="button primary" type="button">匯入並檢查</button></div></dialog>
+</body>
+</html>

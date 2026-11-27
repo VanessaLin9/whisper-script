@@ -8,6 +8,8 @@
 
 Windows 與 Mac 瀏覽器也可從 repo 根目錄執行 `python3 -m src.web_ui`，開啟 **Meeting Desk 本機網頁介面**。它只監聽 `127.0.0.1`，每次啟動產生新的驗證網址；請使用終端機顯示的完整網址，勿轉傳。音檔與清洗稿需輸入本機絕對路徑，網頁不會上傳檔案。可在網頁查看會議與 LLM 工作、轉錄與取消、預覽和人工訂正、交接與匯入、檢查環境與調整設定。Mac 原生 App 仍是 Mac 上的主要介面。
 
+若想在沒有瀏覽器網址列的獨立視窗使用，先安裝選用依賴 `python3 -m pip install -r requirements-webview.txt`，再從 repo 根目錄執行 `python3 -m src.web_ui --app`。關閉視窗會停止本機伺服器；未安裝此依賴時，原本的瀏覽器模式仍可使用。網頁版的「資料夾位置」可複製路徑並貼到檔案管理員開啟。
+
 若要把 Meeting Desk action 供本機 agent 使用，請參考 [AGENTS.md 的 MCP server 說明](AGENTS.md#mcp-server)；MCP server 是選用依賴，不影響 CLI 與 GUI。
 
 在 Finder 雙擊根目錄的 **`開啟 Meeting Desk.command`**。第一次會以系統 Swift 編譯原生 App；後續直接啟動。需要 macOS 14+、Xcode Command Line Tools、Python 3.10+，以及原有 FFmpeg / whisper.cpp 環境，不需額外 Python GUI 套件。
