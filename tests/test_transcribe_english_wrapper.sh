@@ -95,6 +95,8 @@ clone_project() {
         "${dest}/src/transcription" \
         "${dest}/src/output_manager"
     cp "${ROOT}/env_loader.py" "${dest}/"
+    cp "${ROOT}/src/workflow_cli.py" "${dest}/src/"
+    cp "${ROOT}/src/platform_support.py" "${dest}/src/"
     cp "${ROOT}/scripts/lib/common.sh" "${dest}/scripts/lib/"
     cp "${ROOT}/scripts/organize_recording.py" "${dest}/scripts/"
     cp "${ROOT}/scripts/transcribe-english.sh" "${dest}/scripts/"

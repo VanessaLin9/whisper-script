@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
+from src.platform_support import find_executable
+
 from src.output_manager import (
     SourceDescriptor,
     SourceKind,
@@ -68,9 +70,10 @@ def parse_datetime(value: str) -> Optional[datetime]:
 
 def ffprobe_creation_time(audio_file: Path) -> Optional[datetime]:
     try:
+        ffprobe = find_executable("ffprobe")
         result = subprocess.run(
             [
-                "ffprobe",
+                str(ffprobe),
                 "-v",
                 "error",
                 "-show_entries",
