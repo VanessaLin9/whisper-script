@@ -1,0 +1,2 @@
+# 選用：Meeting Desk 獨立視窗。瀏覽器模式不需要此依賴。
+pywebview>=5,<7
