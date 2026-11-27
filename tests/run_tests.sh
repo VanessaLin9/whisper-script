@@ -22,6 +22,7 @@ PYTHONPATH="$ROOT" python3 tests/test_drive_workflow.py -v
 PYTHONPATH="$ROOT" python3 tests/test_drive_workflow_cli.py -v
 PYTHONPATH="$ROOT" python3 tests/test_transcription_core.py -v
 PYTHONPATH="$ROOT" python3 tests/test_transcription_cli.py -v
+PYTHONPATH="$ROOT" python3 tests/test_workflow_cli.py -v
 PYTHONPATH="$ROOT" python3 tests/test_subprocess_runner.py -v
 PYTHONPATH="$ROOT" python3 tests/test_transcript_preparer.py -v
 PYTHONPATH="$ROOT" python3 tests/test_backend_cancellation_07_2.py -v

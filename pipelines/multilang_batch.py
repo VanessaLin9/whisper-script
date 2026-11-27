@@ -8,6 +8,8 @@ import os
 import sys
 import json
 import argparse
+import contextlib
+import io
 import subprocess
 import shutil
 from pathlib import Path
@@ -114,49 +116,25 @@ def run_preprocess(audio_file: Path, script_dir: Path) -> Optional[Path]:
 
 
 def run_transcribe(segments_dir: Path, script_dir: Path) -> bool:
-    """
-    Run multi-lang.sh on the segments directory
-    Returns True if successful
-    """
-    transcribe_script = script_dir / "multi-lang.sh"
-    
-    if not transcribe_script.exists():
-        print_error(f"multi-lang.sh not found at {transcribe_script}")
+    """Transcribe segments directly through the Python workflow."""
+    from src.workflow_cli import main as workflow_main
+
+    print("    Transcribing segments...")
+    output = io.StringIO()
+    with contextlib.redirect_stdout(output):
+        status = workflow_main(['multi-lang', str(segments_dir)])
+    for line in output.getvalue().splitlines():
+        if any(keyword in line for keyword in ('Transcribing:', 'Success', 'Failed', 'Complete')):
+            print(f"    {line}")
+    if status:
+        print_error(f"Transcription failed (exit {status})")
         return False
-    
-    # Make sure script is executable
-    transcribe_script.chmod(0o755)
-    
-    print(f"    Transcribing segments...")
-    
-    try:
-        result = subprocess.run(
-            [str(transcribe_script), str(segments_dir)],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        
-        # Show relevant output
-        for line in result.stdout.split('\n'):
-            if any(keyword in line for keyword in ['Transcribing:', 'Success', 'Failed', 'Complete']):
-                print(f"    {line}")
-        
-        # Check if transcripts folder was created
-        transcripts_dir = segments_dir / "transcripts"
-        if transcripts_dir.exists():
-            txt_files = list(transcripts_dir.glob("*.txt"))
-            print_success(f"Generated {len(txt_files)} transcripts")
-            return True
-        else:
-            print_error("Transcripts directory not created")
-            return False
-            
-    except subprocess.CalledProcessError as e:
-        print_error(f"Transcription failed: {e}")
-        if e.stderr:
-            print(f"    Error: {e.stderr}")
-        return False
+    transcripts_dir = segments_dir / "transcripts"
+    if transcripts_dir.exists():
+        print_success(f"Generated {len(list(transcripts_dir.glob('*.txt')))} transcripts")
+        return True
+    print_error("Transcripts directory not created")
+    return False
 
 
 def merge_transcripts(segments_dir: Path) -> bool:
