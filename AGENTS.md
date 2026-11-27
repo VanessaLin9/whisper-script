@@ -33,6 +33,12 @@ Desk 依下列順序決定根目錄，前者存在設定時優先：
 4. 人工檢查清洗稿後呼叫 `review`。這是人工關卡，會自動建立 notes job。
 5. agent 完成 notes job 後呼叫 `import_notes`；寫入 Notion 仍必須取得人同意，本 repo 不會自動發布。
 
+## 本機網頁介面（Windows／Mac 瀏覽器）
+
+從 repo 根目錄執行 `python3 -m src.web_ui`。終端機會印出含當次 session token 的完整網址並開啟預設瀏覽器；只在 `127.0.0.1` 提供服務。若預設的 8765 埠被佔用，會改用空閒埠。關閉終端機中的程式即可停止服務。請勿轉傳該網址。
+
+網頁使用與原生 Desk 相同的 `DesktopService` action。音檔與清洗稿以本機絕對路徑匯入，不經瀏覽器上傳；會議資料夾仍受 action 層限制。`process` 可顯示進度並取消；人工確認清洗稿後才可匯入會議記錄。此介面不會發布到 Notion。Mac 原生 Desk 仍可照常使用。
+
 ## MCP server
 
 Meeting Desk 另提供選用的本機 MCP stdio server。建議使用虛擬環境安裝依賴：
