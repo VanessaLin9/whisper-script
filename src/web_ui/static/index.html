@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Meeting Desk 本機介面</title><link rel="stylesheet" href="/style.css" defer></head>
+<body>
+<header><h1>Meeting Desk</h1><span>本機會議工作台</span><nav><button id="tabMeet">會議</button><button id="tabJobs">LLM 工作</button><button id="tabSettings">環境與設定</button></nav></header>
+<p id="notice" role="status"></p>
+<main>
+<section id="meetView">
+  <aside><div class="row"><h2>會議</h2><button id="refresh">重新整理</button></div><div id="meetings"></div></aside>
+  <article>
+    <section class="panel"><h2>匯入音檔</h2><label>本機音檔絕對路徑 <input id="audioPath" placeholder="C:\Users\…\recording.m4a"></label><button id="inspect">檢查音檔</button><div id="importDraft" hidden><p id="resolvedPath"></p><label>會議名稱 <input id="importTitle"></label><label>錄音時間（臺北時間，YYYY-MM-DD HH:MM） <input id="importTime"></label><button id="importAudio">確認匯入</button></div></section>
+    <section id="detail" class="panel" hidden><div class="row"><h2 id="meetingTitle"></h2><button id="rename">改名稱</button></div><p id="meetingStatus"></p><div class="actions"><button id="process">轉錄並整理</button><button id="cancelProcess" hidden>取消轉錄</button><label>提示詞 <select id="profile"></select></label><button id="handoffClean">建立清洗工作</button><button id="importJob">匯入工作結果</button><label>清洗稿 TXT 路徑 <input id="cleanedPath"></label><button id="importCleaned">匯入清洗稿</button><button id="review">已檢查，確認清洗稿</button><button id="handoffNotes">建立會議記錄工作</button><button id="importNotes">匯入會議記錄</button></div><p id="progress" role="status"></p>
+    <div class="row"><label>稿件 <select id="kind"><option value="raw">原始稿</option><option value="prepared">預清洗稿</option><option value="corrected">人工訂正</option><option value="cleaned">清洗稿</option><option value="srt">時間軸字幕</option></select></label><button id="loadPreview">載入稿件</button><button id="edit">編輯文字</button></div><p id="previewPath"></p><pre id="preview"></pre><div id="editor" hidden><p id="editHelp"></p><div id="editFields"></div><button id="saveEdit">確認儲存訂正</button><button id="discardEdit">放棄修改</button></div></section>
+  </article>
+</section>
+<section id="jobsView" class="panel" hidden><div class="row"><h2>LLM 工作</h2><label><input type="checkbox" id="archive">包含封存</label><button id="refreshJobs">重新整理</button></div><p>此處只顯示工作狀態；請依交接路徑讓 agent 完成 outbox 結果。</p><div id="jobs"></div></section>
+<section id="settingsView" class="panel" hidden><h2>環境與設定</h2><div id="checks"></div><label>會議資料根目錄 <input id="outputRoot"></label><label>whisper.cpp 路徑 <input id="whisperRoot"></label><label>模型 <select id="model"><option value="tiny">tiny</option><option value="base">base</option><option value="small">small</option><option value="medium">medium</option><option value="large-v3">large-v3</option></select></label><label>執行緒 <input type="number" min="1" max="256" id="threads"></label><button id="saveSettings">確認儲存設定</button></section>
+</main><script src="/app.js" defer></script></body></html>
